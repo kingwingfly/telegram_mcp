@@ -489,7 +489,7 @@ impl TelegramMcp {
     }
 }
 
-/// Joining/leaving chats and managing contacts: `serve --access contacts` (or `send`).
+/// Joining/leaving chats and managing contacts: `serve --access contacts`.
 #[tool_router(router = contacts_tools, vis = "pub(super)")]
 impl TelegramMcp {
     #[tool(

@@ -37,11 +37,10 @@ enum Command {
     Logout,
     /// Run the MCP server over stdio (the default).
     Serve {
-        /// Tools acting as you, on top of the read tools: `contacts` (join/leave chats,
-        /// add/delete contacts) or `send` (contacts plus send, edit, delete, forward, react,
-        /// pin, click buttons) [default: read only]
-        #[arg(long, value_enum, value_name = "GROUP")]
-        access: Option<server::Access>,
+        /// Tool groups acting as you, on top of the read tools; comma-separated or repeated,
+        /// e.g. `--access contacts,send` [default: read only]
+        #[arg(long, value_enum, value_delimiter = ',', value_name = "GROUPS")]
+        access: Vec<server::Access>,
         /// Where download_media saves files [default: <downloads dir>/telegram-mcp]
         #[arg(long, value_name = "PATH")]
         download_dir: Option<PathBuf>,
@@ -64,7 +63,7 @@ async fn main() -> Result<()> {
     let config = Config::load(cli.env_file.as_deref(), cli.session)?;
 
     let command = cli.command.unwrap_or(Command::Serve {
-        access: None,
+        access: Vec::new(),
         download_dir: None,
     });
     match command {

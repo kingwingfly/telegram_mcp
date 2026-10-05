@@ -35,32 +35,39 @@ pub struct TelegramMcp {
     /// Lowercased username -> peer. Telegram rate-limits username lookups hard (FLOOD_WAIT).
     usernames: Arc<Mutex<HashMap<String, PeerRef>>>,
     account: String,
-    access: Option<Access>,
+    /// Enabled groups, sorted and deduplicated.
+    access: Vec<Access>,
     download_dir: PathBuf,
     tool_router: ToolRouter<Self>,
 }
 
-/// Tool groups that act as the user, on top of the always-on read tools. Each includes the
-/// ones before it.
+/// Tool groups that act as the user, on top of the always-on read tools. Independent:
+/// each enables only its own tools.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, clap::ValueEnum)]
 pub enum Access {
     /// Join/leave chats, add/delete contacts.
     Contacts,
-    /// Contacts, plus send, edit, delete, forward, react, pin, click buttons.
+    /// Send, edit, delete, forward, react, pin, mark read, click buttons.
     Send,
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for TelegramMcp {
     fn get_info(&self) -> ServerConfig {
-        let mode = match self.access {
-            Some(Access::Send) => {
-                "Write tools are enabled: anything sent, edited, deleted, forwarded, clicked or joined is done as this user."
-            }
-            Some(Access::Contacts) => {
-                "Joining and leaving chats and managing contacts is enabled (done as this user); sending is disabled."
-            }
-            None => "Read-only: write tools are disabled.",
+        let enabled: Vec<&str> = self
+            .access
+            .iter()
+            .map(|group| match group {
+                Access::Contacts => "joining/leaving chats and managing contacts",
+                Access::Send => {
+                    "sending, editing, deleting, forwarding, reacting, pinning and clicking buttons"
+                }
+            })
+            .collect();
+        let mode = if enabled.is_empty() {
+            "Read-only: tools that act as this user are disabled.".to_owned()
+        } else {
+            format!("Enabled, and done as this user: {}.", enabled.join("; "))
         };
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
@@ -248,7 +255,9 @@ fn parse_link(input: &str) -> Result<Link, String> {
 }
 
 /// Runs the MCP server over stdio. Requires a session created by `telegram-mcp login`.
-pub async fn serve(config: &Config, access: Option<Access>, download_dir: PathBuf) -> Result<()> {
+pub async fn serve(config: &Config, mut access: Vec<Access>, download_dir: PathBuf) -> Result<()> {
+    access.sort();
+    access.dedup();
     let path = &config.session_path;
     if !path.exists() {
         bail!(
@@ -271,10 +280,10 @@ pub async fn serve(config: &Config, access: Option<Access>, download_dir: PathBu
         tracing::info!("serving MCP over stdio as {account} (access: {access:?})");
 
         let mut tool_router = TelegramMcp::read_tools();
-        if access >= Some(Access::Contacts) {
+        if access.contains(&Access::Contacts) {
             tool_router += TelegramMcp::contacts_tools();
         }
-        if access >= Some(Access::Send) {
+        if access.contains(&Access::Send) {
             tool_router += TelegramMcp::send_tools();
         }
         let server = TelegramMcp {

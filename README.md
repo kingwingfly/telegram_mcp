@@ -41,9 +41,9 @@ MCP clients usually launch servers from another directory, so point at `.env` ex
 }
 ```
 
-Read tools are always on. Add `"--access", "contacts"` after `"serve"` to also let the agent
-join/leave chats and manage contacts, or `"--access", "send"` to enable every tool that acts as
-you (it includes `contacts`). `--download-dir <PATH>` sets
+Read tools are always on. Add `"--access", "<groups>"` after `"serve"` to enable tools that act
+as you, comma-separated: `contacts` (join/leave chats, manage contacts) and/or `send`
+(everything else), e.g. `"--access", "contacts,send"`. `--download-dir <PATH>` sets
 where `download_media` saves files (default `<downloads dir>/telegram-mcp`).
 
 Only `TELEGRAM_API_ID` is needed to serve; `TELEGRAM_API_HASH` is only used by `login`.
@@ -57,7 +57,7 @@ Markdown; messages also carry their buttons (inline and bot keyboards), link-pre
 source and t.me link. `click_button` presses a bot's callback button (next page, filters) and
 returns the bot's answer, the message as edited by the bot, and any messages it sent.
 
-| Read (always on) | `--access contacts` | `--access send` (includes contacts) |
+| Read (always on) | `--access contacts` | `--access send` |
 |---|---|---|
 | `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
 | `get_messages`, `get_replies`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
