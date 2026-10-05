@@ -25,7 +25,7 @@ use crate::config::Config;
 use crate::telegram::{Session, Telegram, describe};
 
 /// Read tools live in `read.rs`; tools that act as the user live in `write.rs`:
-/// join/leave are registered with `serve --allow-join`, everything with `--allow-send`.
+/// join/leave and contacts are registered with `serve --allow-join`, everything with `--allow-send`.
 #[derive(Clone)]
 pub struct TelegramMcp {
     client: Client,
@@ -47,7 +47,7 @@ impl ServerHandler for TelegramMcp {
         let mode = if self.allow_send {
             "Write tools are enabled: anything sent, edited, deleted, forwarded or joined is done as this user."
         } else if self.allow_join {
-            "Joining and leaving chats is enabled (done as this user); sending is disabled."
+            "Joining and leaving chats and managing contacts is enabled (done as this user); sending is disabled."
         } else {
             "Read-only: write tools are disabled."
         };
@@ -354,9 +354,9 @@ struct MessageInfo {
     /// Summary of the attached media, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     media: Option<String>,
-    /// Link buttons under the message.
+    /// Buttons under the message (or the bot keyboard it shows); see click_button.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    buttons: Vec<LinkButton>,
+    buttons: Vec<Button>,
     /// t.me link to this message, for groups and channels.
     #[serde(skip_serializing_if = "Option::is_none")]
     link: Option<String>,
@@ -376,9 +376,144 @@ struct ForwardSource {
 }
 
 #[derive(Serialize, JsonSchema)]
-struct LinkButton {
+struct Button {
+    /// Position across all rows; pass it to click_button.
+    index: usize,
     text: String,
-    url: String,
+    kind: ButtonKind,
+    /// Where `url`, `user` and `webview` buttons lead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ButtonKind {
+    /// Asks the bot to act, e.g. next page or a filter.
+    Callback,
+    Url,
+    User,
+    Webview,
+    /// Copies a text.
+    Copy,
+    /// Starts an inline query in another chat.
+    SwitchInline,
+    Game,
+    Buy,
+    /// Bot keyboard button: clicking sends its text.
+    Keyboard,
+    /// Bot keyboard button that shares your phone, location or a chat.
+    Request,
+    Other,
+}
+
+/// What clicking a button does.
+enum ButtonAction {
+    Callback {
+        data: Vec<u8>,
+        requires_password: bool,
+    },
+    Link(String),
+    Copy(String),
+    /// Sends the button's text.
+    Keyboard,
+    Unsupported(&'static str),
+}
+
+/// A message's buttons in display order, with what clicking each does.
+fn message_buttons(message: &Message) -> Vec<(Button, ButtonAction)> {
+    use tl::enums::{ButtonType, InlineButtonType};
+    let buttons: Vec<(String, ButtonKind, Option<String>, ButtonAction)> = match message
+        .reply_markup()
+    {
+        Some(tl::enums::ReplyMarkup::ReplyInlineMarkup(markup)) => markup
+            .rows
+            .into_iter()
+            .flat_map(|tl::enums::KeyboardInlineButtonRow::Row(row)| row.buttons)
+            .map(|tl::enums::KeyboardInlineButton::Button(button)| {
+                let link = |kind, url: String| (kind, Some(url.clone()), ButtonAction::Link(url));
+                let (kind, url, action) = match button.r#type {
+                    InlineButtonType::Callback(callback) => (
+                        ButtonKind::Callback,
+                        None,
+                        ButtonAction::Callback {
+                            data: callback.data,
+                            requires_password: callback.requires_password,
+                        },
+                    ),
+                    InlineButtonType::Url(target) => link(ButtonKind::Url, target.url),
+                    InlineButtonType::UrlAuth(target) => link(ButtonKind::Url, target.url),
+                    InlineButtonType::WebView(target) => link(ButtonKind::Webview, target.url),
+                    InlineButtonType::UserProfile(target) => {
+                        link(ButtonKind::User, format!("tg://user?id={}", target.user_id))
+                    }
+                    InlineButtonType::Copy(target) => {
+                        (ButtonKind::Copy, None, ButtonAction::Copy(target.copy_text))
+                    }
+                    InlineButtonType::SwitchInline(_) => (
+                        ButtonKind::SwitchInline,
+                        None,
+                        ButtonAction::Unsupported("switch-inline buttons are not supported"),
+                    ),
+                    InlineButtonType::Game => (
+                        ButtonKind::Game,
+                        None,
+                        ButtonAction::Unsupported("game buttons are not supported"),
+                    ),
+                    InlineButtonType::Buy => (
+                        ButtonKind::Buy,
+                        None,
+                        ButtonAction::Unsupported("payment buttons are not supported"),
+                    ),
+                    _ => (
+                        ButtonKind::Other,
+                        None,
+                        ButtonAction::Unsupported("this button cannot be clicked"),
+                    ),
+                };
+                (button.text, kind, url, action)
+            })
+            .collect(),
+        Some(tl::enums::ReplyMarkup::ReplyKeyboardMarkup(markup)) => markup
+            .rows
+            .into_iter()
+            .flat_map(|tl::enums::KeyboardButtonRow::Row(row)| row.buttons)
+            .map(|tl::enums::KeyboardButton::Button(button)| {
+                let (kind, url, action) = match button.r#type {
+                    ButtonType::Default => (ButtonKind::Keyboard, None, ButtonAction::Keyboard),
+                    ButtonType::SimpleWebView(target) => (
+                        ButtonKind::Webview,
+                        Some(target.url.clone()),
+                        ButtonAction::Link(target.url),
+                    ),
+                    _ => (
+                        ButtonKind::Request,
+                        None,
+                        ButtonAction::Unsupported(
+                            "this button shares your phone, location or a chat with the bot",
+                        ),
+                    ),
+                };
+                (button.text, kind, url, action)
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    buttons
+        .into_iter()
+        .enumerate()
+        .map(|(index, (text, kind, url, action))| {
+            (
+                Button {
+                    index,
+                    text,
+                    kind,
+                    url,
+                },
+                action,
+            )
+        })
+        .collect()
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -457,29 +592,6 @@ fn message_info(message: &Message, me: PeerRef) -> MessageInfo {
             name: header.from_name,
         }
     });
-    let buttons = match message.reply_markup() {
-        Some(tl::enums::ReplyMarkup::ReplyInlineMarkup(markup)) => markup
-            .rows
-            .into_iter()
-            .flat_map(|tl::enums::KeyboardInlineButtonRow::Row(row)| row.buttons)
-            .filter_map(|tl::enums::KeyboardInlineButton::Button(button)| {
-                let url = match button.r#type {
-                    tl::enums::InlineButtonType::Url(target) => target.url,
-                    tl::enums::InlineButtonType::UrlAuth(target) => target.url,
-                    tl::enums::InlineButtonType::WebView(target) => target.url,
-                    tl::enums::InlineButtonType::UserProfile(target) => {
-                        format!("tg://user?id={}", target.user_id)
-                    }
-                    _ => return None,
-                };
-                Some(LinkButton {
-                    text: button.text,
-                    url,
-                })
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
     let chat_id = message.peer_id();
     let link = match message.peer().and_then(Peer::username) {
         Some(username) if chat_id.kind() != PeerKind::User => {
@@ -507,7 +619,10 @@ fn message_info(message: &Message, me: PeerRef) -> MessageInfo {
         forwarded_from,
         text: message.markdown_text(),
         media,
-        buttons,
+        buttons: message_buttons(message)
+            .into_iter()
+            .map(|(button, _)| button)
+            .collect(),
         link,
     }
 }

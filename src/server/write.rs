@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use grammers_client::message::InputMessage;
 use grammers_client::peer::{Peer, User};
@@ -7,11 +8,11 @@ use grammers_session::types::PeerKind;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
-    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info,
-    fail, message_info, parse_link,
+    ButtonAction, ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp,
+    chat_info, fail, message_buttons, message_info, parse_link,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -68,6 +69,33 @@ struct SendReactionParams {
     message_id: i32,
     /// A single emoji, e.g. 👍. Must be allowed in the chat.
     emoji: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ClickButtonParams {
+    /// `me`, `@username`, a t.me link, or a numeric id of the chat with the message.
+    chat: String,
+    message_id: i32,
+    /// The button's `index` from the message's `buttons`.
+    index: Option<usize>,
+    /// Or the button's text: an exact match, else a unique partial match.
+    text: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema, Default)]
+struct ClickResult {
+    /// The bot's answer to the click (popup or alert text), or the text a copy button copies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    answer: Option<String>,
+    /// A link to open: the button's own, or one the bot answered with. Nothing was opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    /// The clicked message after the click; bots often edit it in place (next page, filters).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<MessageInfo>,
+    /// Messages the chat received after the click, oldest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    new_messages: Vec<MessageInfo>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -294,6 +322,226 @@ impl TelegramMcp {
     }
 
     #[tool(
+        description = "Click a button under a message as the user, e.g. a bot's next page or filter: returns the bot's answer, the message after the click, and messages the click produced. Link and copy buttons are only reported, not opened.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn click_button(
+        &self,
+        Parameters(params): Parameters<ClickButtonParams>,
+    ) -> Result<Json<ClickResult>, String> {
+        let peer = self.resolve(&params.chat).await?;
+        let not_empty = |message: &&grammers_client::message::Message| {
+            !matches!(message.raw, tl::enums::Message::Empty(_))
+        };
+        let message = self
+            .client
+            .get_messages_by_id(peer, &[params.message_id])
+            .await
+            .map_err(fail)?
+            .into_iter()
+            .flatten()
+            .find(|message| not_empty(&message))
+            .ok_or(format!("message {} not found", params.message_id))?;
+
+        let buttons = message_buttons(&message);
+        if buttons.is_empty() {
+            return Err(format!("message {} has no buttons", params.message_id));
+        }
+        let position = match (params.index, params.text.as_deref().map(str::trim)) {
+            (Some(index), None) => (index < buttons.len()).then_some(index),
+            (None, Some(text)) => buttons
+                .iter()
+                .position(|(button, _)| button.text.trim() == text)
+                .or_else(|| {
+                    let text = text.to_lowercase();
+                    let mut partial = buttons
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (button, _))| button.text.to_lowercase().contains(&text))
+                        .map(|(position, _)| position);
+                    partial.next().filter(|_| partial.next().is_none())
+                }),
+            _ => return Err("pass exactly one of `index` or `text`".to_owned()),
+        };
+        let Some(position) = position else {
+            let available: Vec<String> = buttons
+                .iter()
+                .map(|(button, _)| format!("[{}] {}", button.index, button.text))
+                .collect();
+            return Err(format!(
+                "no such button; available: {}",
+                available.join(", ")
+            ));
+        };
+        let (button, action) = buttons
+            .into_iter()
+            .nth(position)
+            .expect("position is in range");
+
+        let callback_data = match action {
+            ButtonAction::Link(url) => {
+                return Ok(Json(ClickResult {
+                    url: Some(url),
+                    ..Default::default()
+                }));
+            }
+            ButtonAction::Copy(text) => {
+                return Ok(Json(ClickResult {
+                    answer: Some(text),
+                    ..Default::default()
+                }));
+            }
+            ButtonAction::Unsupported(reason) => return Err(reason.to_owned()),
+            ButtonAction::Callback {
+                requires_password: true,
+                ..
+            } => {
+                return Err(
+                    "this button asks for the account's 2FA password; not supported".to_owned(),
+                );
+            }
+            ButtonAction::Callback { data, .. } => Some(data),
+            ButtonAction::Keyboard => None,
+        };
+
+        // The newest message before the click tells which messages the click produced.
+        let mut latest = self.client.iter_messages(peer).limit(1);
+        let last_id = latest.next().await.map_err(fail)?.map_or(0, |m| m.id());
+
+        let mut result = ClickResult::default();
+        match callback_data {
+            Some(data) => {
+                let answer = self
+                    .client
+                    .invoke(&tl::functions::messages::GetBotCallbackAnswer {
+                        game: false,
+                        peer: (&peer).into(),
+                        msg_id: message.id(),
+                        data: Some(data),
+                        password: None,
+                    })
+                    .await;
+                match answer {
+                    Ok(tl::enums::messages::BotCallbackAnswer::Answer(answer)) => {
+                        result.answer = answer.message;
+                        result.url = answer.url;
+                    }
+                    // The bot may still act on the click after failing to answer in time.
+                    Err(error) if error.is("BOT_RESPONSE_TIMEOUT") => {
+                        result.answer =
+                            Some("(the bot did not answer the click in time)".to_owned());
+                    }
+                    Err(error) => return Err(fail(error)),
+                }
+            }
+            None => {
+                self.client
+                    .send_message(peer, InputMessage::new().text(&button.text))
+                    .await
+                    .map_err(fail)?;
+            }
+        }
+
+        // Bots usually edit the message or reply right after answering.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        result.message = self
+            .client
+            .get_messages_by_id(peer, &[message.id()])
+            .await
+            .map_err(fail)?
+            .iter()
+            .flatten()
+            .find(not_empty)
+            .map(|message| message_info(message, self.me));
+        let mut newer = self
+            .client
+            .iter_messages(peer)
+            .reverse(true)
+            .offset_id(last_id)
+            .limit(10);
+        while let Some(message) = newer.next().await.map_err(fail)? {
+            result.new_messages.push(message_info(&message, self.me));
+        }
+        Ok(Json(result))
+    }
+
+    #[tool(
+        description = "Mark all messages in a chat as read.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn mark_as_read(
+        &self,
+        Parameters(params): Parameters<ChatParams>,
+    ) -> Result<String, String> {
+        let peer = self.resolve(&params.chat).await?;
+        self.client.mark_as_read(peer).await.map_err(fail)?;
+        Ok(format!("marked {} as read", params.chat))
+    }
+}
+
+/// Joining/leaving chats and managing contacts: registered with `serve --allow-join`
+/// (or `--allow-send`).
+#[tool_router(router = membership_tools, vis = "pub(super)")]
+impl TelegramMcp {
+    #[tool(
+        description = "Join a group or channel as the user: @username, t.me link, or invite link. Public chats can be read without joining.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn join_chat(
+        &self,
+        Parameters(params): Parameters<JoinChatParams>,
+    ) -> Result<String, String> {
+        let joined = match parse_link(&params.chat)?.chat {
+            ChatRef::Invite(_) => self.client.accept_invite_link(&params.chat).await,
+            chat => {
+                let peer = self.resolve_chat(&chat).await?;
+                self.client.join_chat(peer).await
+            }
+        };
+        Ok(match joined.map_err(fail)? {
+            Some(peer) => {
+                let chat = chat_info(&peer);
+                format!("joined {} (id {})", chat.name, chat.id)
+            }
+            None => format!("joined {}", params.chat),
+        })
+    }
+
+    #[tool(
+        description = "Leave a group or channel as the user.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn leave_chat(
+        &self,
+        Parameters(params): Parameters<ChatParams>,
+    ) -> Result<String, String> {
+        let peer = self.resolve(&params.chat).await?;
+        // For private chats grammers' delete_dialog deletes the history instead.
+        if peer.id.kind() == PeerKind::User {
+            return Err("leave_chat only works for groups and channels".to_owned());
+        }
+        self.client.delete_dialog(peer).await.map_err(fail)?;
+        Ok(format!("left {}", params.chat))
+    }
+
+    #[tool(
         description = "Add someone to the user's Telegram contacts, by @username/id/link or by phone number. The user's own phone number is not shared.",
         annotations(
             read_only_hint = false,
@@ -392,76 +640,5 @@ impl TelegramMcp {
             .await
             .map_err(fail)?;
         Ok(format!("removed {} from contacts", params.user))
-    }
-
-    #[tool(
-        description = "Mark all messages in a chat as read.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = true
-        )
-    )]
-    async fn mark_as_read(
-        &self,
-        Parameters(params): Parameters<ChatParams>,
-    ) -> Result<String, String> {
-        let peer = self.resolve(&params.chat).await?;
-        self.client.mark_as_read(peer).await.map_err(fail)?;
-        Ok(format!("marked {} as read", params.chat))
-    }
-}
-
-/// Entering and leaving chats: registered with `serve --allow-join` (or `--allow-send`).
-#[tool_router(router = membership_tools, vis = "pub(super)")]
-impl TelegramMcp {
-    #[tool(
-        description = "Join a group or channel as the user: @username, t.me link, or invite link. Public chats can be read without joining.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            open_world_hint = true
-        )
-    )]
-    async fn join_chat(
-        &self,
-        Parameters(params): Parameters<JoinChatParams>,
-    ) -> Result<String, String> {
-        let joined = match parse_link(&params.chat)?.chat {
-            ChatRef::Invite(_) => self.client.accept_invite_link(&params.chat).await,
-            chat => {
-                let peer = self.resolve_chat(&chat).await?;
-                self.client.join_chat(peer).await
-            }
-        };
-        Ok(match joined.map_err(fail)? {
-            Some(peer) => {
-                let chat = chat_info(&peer);
-                format!("joined {} (id {})", chat.name, chat.id)
-            }
-            None => format!("joined {}", params.chat),
-        })
-    }
-
-    #[tool(
-        description = "Leave a group or channel as the user.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            open_world_hint = true
-        )
-    )]
-    async fn leave_chat(
-        &self,
-        Parameters(params): Parameters<ChatParams>,
-    ) -> Result<String, String> {
-        let peer = self.resolve(&params.chat).await?;
-        // For private chats grammers' delete_dialog deletes the history instead.
-        if peer.id.kind() == PeerKind::User {
-            return Err("leave_chat only works for groups and channels".to_owned());
-        }
-        self.client.delete_dialog(peer).await.map_err(fail)?;
-        Ok(format!("left {}", params.chat))
     }
 }

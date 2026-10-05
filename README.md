@@ -41,7 +41,7 @@ MCP clients usually launch servers from another directory, so point at `.env` ex
 }
 ```
 
-Add `"--allow-join"` after `"serve"` to let the agent join and leave chats, or `"--allow-send"`
+Add `"--allow-join"` after `"serve"` to let the agent join/leave chats and manage contacts, or `"--allow-send"`
 to enable every write tool. `--download-dir <PATH>` sets
 where `download_media` saves files (default `<downloads dir>/telegram-mcp`).
 
@@ -52,13 +52,15 @@ Logs go to stderr (`RUST_LOG` controls verbosity), since stdout carries the prot
 
 Chats are given as `me` (Saved Messages), `@username`, a numeric id from `list_chats`, or any
 Telegram link (`t.me/…`, `telegram.me/…`, `tg://…`, including message links). Message text is
-Markdown; messages also carry their link buttons, link-preview URL, forward source and t.me link.
+Markdown; messages also carry their buttons (inline and bot keyboards), link-preview URL, forward
+source and t.me link. `click_button` presses a bot's callback button (next page, filters) and
+returns the bot's answer, the message as edited by the bot, and any messages it sent.
 
 | Read (always on) | Join (`--allow-join`) | Write (`--allow-send`, includes join) |
 |---|---|---|
 | `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
 | `get_messages`, `get_replies`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
-| `open_link`, `download_media`, `list_contacts` | | `mark_as_read`, `add_contact`, `delete_contact` |
+| `open_link`, `download_media`, `list_contacts` | `add_contact`, `delete_contact` | `mark_as_read`, `click_button` |
 
 `get_chat` (and `open_link` on a chat) returns the chat's pinned messages, where groups and
 channels usually keep their index, plus a user's profile channel or a channel's discussion

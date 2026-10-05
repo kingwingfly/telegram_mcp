@@ -37,7 +37,7 @@ enum Command {
     Logout,
     /// Run the MCP server over stdio (the default).
     Serve {
-        /// Also expose join_chat and leave_chat (acting as you).
+        /// Also expose join_chat, leave_chat, add_contact and delete_contact (acting as you).
         #[arg(long)]
         allow_join: bool,
         /// Also expose every tool that acts as you: send, edit, delete, forward, react, pin, join, leave.
