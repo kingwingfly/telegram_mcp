@@ -23,8 +23,8 @@ cargo run -- login                # interactive login (dialoguer; needs a real T
 cargo run -- status               # which account the session belongs to
 cargo run -- logout               # sign out + delete session file
 cargo run                         # = `serve`: MCP over stdio, read-only tools
-cargo run -- serve --allow-join   # also register join/leave chat and add/delete contact
-cargo run -- serve --allow-send   # also register every write tool (includes join/leave)
+cargo run -- serve --access contacts  # also join/leave chats, add/delete contacts
+cargo run -- serve --access send      # also every other tool acting as the user (includes contacts)
 ```
 
 `serve` also takes `--download-dir <PATH>` (where `download_media` saves; default `<downloads dir>/telegram-mcp`). Global flags: `--env-file <PATH>` (otherwise `.env` is searched upward from the cwd) and `--session <PATH>` (or `TELEGRAM_MCP_SESSION`; default `<data dir>/telegram-mcp/telegram.session`).
@@ -48,7 +48,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - `server.rs`: `TelegramMcp` (the `ServerHandler`), `serve`, and what the tool modules share: `parse_link` (every chat/link format → `ChatRef` + optional message id), `resolve` / `resolve_chat`, output types (`ChatInfo`, `MessageInfo`, `Messages`), shared params, and the `chat_info` / `message_info` / `fail` helpers. `serve` refuses to start unless the session is authorized.
 - `server/read.rs`: `read_tools` router (always registered) plus `chat_details`, shared by `get_chat` and `open_link` (full info, profile/linked chat, pinned messages).
 - Raw API calls (`client.invoke`): grammers can't build `Message`/`Peer` maps from them (`PeerMap` has no public constructor). Call `self.cache_peers(&chats, &users)` on every raw response so the ids tools report stay usable; to get full messages, take the ids and refetch with `get_messages_by_id` (as `get_replies` does with `messages.getReplies`).
-- `server/write.rs`: `membership_tools` (join/leave chats, add/delete contacts; `--allow-join` or `--allow-send`) and `write_tools` (`--allow-send`). Each router is a `#[tool_router(router = …, vis = "pub(super)")]` impl. A new tool goes in the router matching what it changes on Telegram, and gets `annotations(...)` hints like its neighbours.
+- `server/write.rs`: `contacts_tools` (join/leave chats, add/delete contacts) and `send_tools`, registered by `serve --access contacts|send` (`server::Access`, ordered: `send` includes `contacts`). Each router is a `#[tool_router(router = …, vis = "pub(super)")]` impl. A new tool goes in the router matching what it changes on Telegram, and gets `annotations(...)` hints like its neighbours.
 - Tool conventions:
   - Every tool takes `chat` as a string and calls `self.resolve(...)`, which accepts anything `parse_link` does. Numeric ids need the peer's access hash, which `resolve` reads from the session cache; the client fills that cache automatically whenever peers are seen, e.g. by `list_chats`. Usernames are cached in memory (`TelegramMcp::usernames`) because `contacts.resolveUsername` hits FLOOD_WAIT quickly.
   - Tools return `Result<Json<T>, String>` (or `Result<String, String>` for plain acknowledgements). `Err(String)` becomes an `isError` result the agent can read; map errors with `.map_err(fail)`. `Json<T>` must wrap an object, never a bare `Vec`.

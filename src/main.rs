@@ -37,12 +37,11 @@ enum Command {
     Logout,
     /// Run the MCP server over stdio (the default).
     Serve {
-        /// Also expose join_chat, leave_chat, add_contact and delete_contact (acting as you).
-        #[arg(long)]
-        allow_join: bool,
-        /// Also expose every tool that acts as you: send, edit, delete, forward, react, pin, join, leave.
-        #[arg(long)]
-        allow_send: bool,
+        /// Tools acting as you, on top of the read tools: `contacts` (join/leave chats,
+        /// add/delete contacts) or `send` (contacts plus send, edit, delete, forward, react,
+        /// pin, click buttons) [default: read only]
+        #[arg(long, value_enum, value_name = "GROUP")]
+        access: Option<server::Access>,
         /// Where download_media saves files [default: <downloads dir>/telegram-mcp]
         #[arg(long, value_name = "PATH")]
         download_dir: Option<PathBuf>,
@@ -65,8 +64,7 @@ async fn main() -> Result<()> {
     let config = Config::load(cli.env_file.as_deref(), cli.session)?;
 
     let command = cli.command.unwrap_or(Command::Serve {
-        allow_join: false,
-        allow_send: false,
+        access: None,
         download_dir: None,
     });
     match command {
@@ -74,8 +72,7 @@ async fn main() -> Result<()> {
         Command::Status => auth::status(&config).await,
         Command::Logout => auth::logout(&config).await,
         Command::Serve {
-            allow_join,
-            allow_send,
+            access,
             download_dir,
         } => {
             let download_dir = match download_dir {
@@ -87,7 +84,7 @@ async fn main() -> Result<()> {
             };
             // Paths are reported to the agent, so make them absolute.
             let download_dir = std::path::absolute(download_dir)?;
-            server::serve(&config, allow_join, allow_send, download_dir).await
+            server::serve(&config, access, download_dir).await
         }
     }
 }

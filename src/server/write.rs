@@ -121,7 +121,8 @@ struct JoinChatParams {
     chat: String,
 }
 
-#[tool_router(router = write_tools, vis = "pub(super)")]
+/// Everything else that acts as the user: `serve --access send`.
+#[tool_router(router = send_tools, vis = "pub(super)")]
 impl TelegramMcp {
     #[tool(
         description = "Send a text message as the user.",
@@ -488,9 +489,8 @@ impl TelegramMcp {
     }
 }
 
-/// Joining/leaving chats and managing contacts: registered with `serve --allow-join`
-/// (or `--allow-send`).
-#[tool_router(router = membership_tools, vis = "pub(super)")]
+/// Joining/leaving chats and managing contacts: `serve --access contacts` (or `send`).
+#[tool_router(router = contacts_tools, vis = "pub(super)")]
 impl TelegramMcp {
     #[tool(
         description = "Join a group or channel as the user: @username, t.me link, or invite link. Public chats can be read without joining.",

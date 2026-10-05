@@ -24,8 +24,8 @@ use crate::auth::authorized_user;
 use crate::config::Config;
 use crate::telegram::{Session, Telegram, describe};
 
-/// Read tools live in `read.rs`; tools that act as the user live in `write.rs`:
-/// join/leave and contacts are registered with `serve --allow-join`, everything with `--allow-send`.
+/// Read tools live in `read.rs`; tools that act as the user live in `write.rs` and are
+/// registered according to `serve --access`.
 #[derive(Clone)]
 pub struct TelegramMcp {
     client: Client,
@@ -35,21 +35,32 @@ pub struct TelegramMcp {
     /// Lowercased username -> peer. Telegram rate-limits username lookups hard (FLOOD_WAIT).
     usernames: Arc<Mutex<HashMap<String, PeerRef>>>,
     account: String,
-    allow_join: bool,
-    allow_send: bool,
+    access: Option<Access>,
     download_dir: PathBuf,
     tool_router: ToolRouter<Self>,
+}
+
+/// Tool groups that act as the user, on top of the always-on read tools. Each includes the
+/// ones before it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, clap::ValueEnum)]
+pub enum Access {
+    /// Join/leave chats, add/delete contacts.
+    Contacts,
+    /// Contacts, plus send, edit, delete, forward, react, pin, click buttons.
+    Send,
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for TelegramMcp {
     fn get_info(&self) -> ServerConfig {
-        let mode = if self.allow_send {
-            "Write tools are enabled: anything sent, edited, deleted, forwarded or joined is done as this user."
-        } else if self.allow_join {
-            "Joining and leaving chats and managing contacts is enabled (done as this user); sending is disabled."
-        } else {
-            "Read-only: write tools are disabled."
+        let mode = match self.access {
+            Some(Access::Send) => {
+                "Write tools are enabled: anything sent, edited, deleted, forwarded, clicked or joined is done as this user."
+            }
+            Some(Access::Contacts) => {
+                "Joining and leaving chats and managing contacts is enabled (done as this user); sending is disabled."
+            }
+            None => "Read-only: write tools are disabled.",
         };
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
@@ -237,12 +248,7 @@ fn parse_link(input: &str) -> Result<Link, String> {
 }
 
 /// Runs the MCP server over stdio. Requires a session created by `telegram-mcp login`.
-pub async fn serve(
-    config: &Config,
-    allow_join: bool,
-    allow_send: bool,
-    download_dir: PathBuf,
-) -> Result<()> {
+pub async fn serve(config: &Config, access: Option<Access>, download_dir: PathBuf) -> Result<()> {
     let path = &config.session_path;
     if !path.exists() {
         bail!(
@@ -262,16 +268,14 @@ pub async fn serve(
             .await
             .map_err(|e| anyhow!(e))?
             .unwrap_or(PeerId::self_user().to_ambient_ref());
-        tracing::info!(
-            "serving MCP over stdio as {account} (allow_join: {allow_join}, allow_send: {allow_send})"
-        );
+        tracing::info!("serving MCP over stdio as {account} (access: {access:?})");
 
         let mut tool_router = TelegramMcp::read_tools();
-        if allow_join || allow_send {
-            tool_router += TelegramMcp::membership_tools();
+        if access >= Some(Access::Contacts) {
+            tool_router += TelegramMcp::contacts_tools();
         }
-        if allow_send {
-            tool_router += TelegramMcp::write_tools();
+        if access >= Some(Access::Send) {
+            tool_router += TelegramMcp::send_tools();
         }
         let server = TelegramMcp {
             client: tg.client.clone(),
@@ -279,8 +283,7 @@ pub async fn serve(
             me,
             usernames: Default::default(),
             account,
-            allow_join,
-            allow_send,
+            access,
             download_dir,
             tool_router,
         };
