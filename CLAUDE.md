@@ -23,7 +23,8 @@ cargo run -- login                # interactive login (dialoguer; needs a real T
 cargo run -- status               # which account the session belongs to
 cargo run -- logout               # sign out + delete session file
 cargo run                         # = `serve`: MCP over stdio, read-only tools
-cargo run -- serve --allow-send   # also register the write tools
+cargo run -- serve --allow-join   # also register join_chat / leave_chat
+cargo run -- serve --allow-send   # also register every write tool (includes join/leave)
 ```
 
 `serve` also takes `--download-dir <PATH>` (where `download_media` saves; default `<downloads dir>/telegram-mcp`). Global flags: `--env-file <PATH>` (otherwise `.env` is searched upward from the cwd) and `--session <PATH>` (or `TELEGRAM_MCP_SESSION`; default `<data dir>/telegram-mcp/telegram.session`).
@@ -44,10 +45,11 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - `main.rs`: clap CLI; dispatches to `auth` (login/status/logout) or `server` (serve, the default).
 - `config.rs`: loads `.env`, reads `TELEGRAM_API_ID` (always needed) and `TELEGRAM_API_HASH` (only needed by `login`, to request a code). The hash is wrapped in `ApiHash`, whose `Debug` is redacted. Never print or log it.
 - `telegram.rs`: `Telegram::connect` opens the `SqliteSession` (owner-only permissions), builds a grammers `SenderPool`, spawns its runner task, and returns the `Client`. Always call `Telegram::shutdown()` on every path, including errors, so the runner stops cleanly. The pattern used is `let result = ...; tg.shutdown().await; result`. The pool's update receiver is dropped because updates are not consumed yet.
-- `server.rs`: `TelegramMcp` (the `ServerHandler`), `serve`, and what both tool modules share: the `resolve` method, output types (`ChatInfo`, `MessageInfo`, `Messages`), shared params (`ChatParams`, `MessageParams`), and the `chat_info` / `message_info` / `fail` helpers. `serve` refuses to start unless the session is authorized.
-- `server/read.rs` and `server/write.rs`: one `#[tool_router(router = read_tools | write_tools, vis = "pub(super)")]` impl each. `serve` always registers `read_tools()` and adds `write_tools()` only with `--allow-send`. A new tool goes in the module matching whether it changes anything on Telegram, and gets `annotations(...)` hints like its neighbours.
+- `server.rs`: `TelegramMcp` (the `ServerHandler`), `serve`, and what the tool modules share: `parse_link` (every chat/link format → `ChatRef` + optional message id), `resolve` / `resolve_chat`, output types (`ChatInfo`, `MessageInfo`, `Messages`), shared params, and the `chat_info` / `message_info` / `fail` helpers. `serve` refuses to start unless the session is authorized.
+- `server/read.rs`: `read_tools` router (always registered) plus `chat_details`, shared by `get_chat` and `open_link` (full info, profile/linked chat, pinned messages).
+- `server/write.rs`: `membership_tools` (join/leave; `--allow-join` or `--allow-send`) and `write_tools` (`--allow-send`). Each router is a `#[tool_router(router = …, vis = "pub(super)")]` impl. A new tool goes in the router matching what it changes on Telegram, and gets `annotations(...)` hints like its neighbours.
 - Tool conventions:
-  - Every tool takes `chat` as a string and calls `self.resolve(...)`. That accepts `me`, `@username`, a t.me link, or a Bot API style numeric id. Numeric ids need the peer's access hash, which `resolve` reads from the session cache; the client fills that cache automatically whenever peers are seen, e.g. by `list_chats`.
+  - Every tool takes `chat` as a string and calls `self.resolve(...)`, which accepts anything `parse_link` does. Numeric ids need the peer's access hash, which `resolve` reads from the session cache; the client fills that cache automatically whenever peers are seen, e.g. by `list_chats`. Usernames are cached in memory (`TelegramMcp::usernames`) because `contacts.resolveUsername` hits FLOOD_WAIT quickly.
   - Tools return `Result<Json<T>, String>` (or `Result<String, String>` for plain acknowledgements). `Err(String)` becomes an `isError` result the agent can read; map errors with `.map_err(fail)`. `Json<T>` must wrap an object, never a bare `Vec`.
   - Message text is Markdown in both directions (grammers `markdown` feature: `message.markdown_text()` / `InputMessage::markdown`).
 
@@ -60,5 +62,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - grammers marks `Media`, `Role` and similar enums `#[non_exhaustive]`, and new TL variants appear upstream (e.g. `Community`). Matches need a wildcard arm.
 - `get_messages_by_id` returns placeholders (`tl::enums::Message::Empty`) for deleted or missing ids; filter them out.
 - Saved Messages: Telegram reports `out = false` there, so `message_info` also treats "sender is me" as outgoing. `from_me` search returns nothing there, and reactions are Premium-only.
+- `delete_dialog` leaves channels/groups but *deletes the history* of private chats; `leave_chat` refuses users for that reason.
+- Inline buttons use the newer layout: `KeyboardInlineButtonRow` → `KeyboardInlineButton { text, type: InlineButtonType }`.
 - `PeerId::self_user()` is a sentinel id; `resolve_peer` can't match it. `me` resolves to the real `PeerRef` captured at startup (`TelegramMcp::me`).
 - dialoguer prompts are blocking; they run through `spawn_blocking` (the `ask` helper in `auth.rs`) so the grammers runner keeps going.

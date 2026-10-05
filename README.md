@@ -41,7 +41,8 @@ MCP clients usually launch servers from another directory, so point at `.env` ex
 }
 ```
 
-Add `"--allow-send"` after `"serve"` to enable the write tools. `--download-dir <PATH>` sets
+Add `"--allow-join"` after `"serve"` to let the agent join and leave chats, or `"--allow-send"`
+to enable every write tool. `--download-dir <PATH>` sets
 where `download_media` saves files (default `<downloads dir>/telegram-mcp`).
 
 Only `TELEGRAM_API_ID` is needed to serve; `TELEGRAM_API_HASH` is only used by `login`.
@@ -49,14 +50,19 @@ Logs go to stderr (`RUST_LOG` controls verbosity), since stdout carries the prot
 
 ## Tools
 
-Chats are given as `me` (Saved Messages), `@username`, a t.me link, or a numeric id from
-`list_chats`. Message text is Markdown.
+Chats are given as `me` (Saved Messages), `@username`, a numeric id from `list_chats`, or any
+Telegram link (`t.me/…`, `telegram.me/…`, `tg://…`, including message links). Message text is
+Markdown; messages also carry their link buttons, link-preview URL, forward source and t.me link.
 
-| Read (always on) | Write (`serve --allow-send`) |
-|---|---|
-| `list_chats`, `get_chat`, `list_participants` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
-| `get_messages`, `search_messages` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
-| `download_media` | `mark_as_read`, `join_chat` |
+| Read (always on) | Join (`--allow-join`) | Write (`--allow-send`, includes join) |
+|---|---|---|
+| `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
+| `get_messages`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
+| `open_link`, `download_media` | | `mark_as_read` |
+
+`get_chat` (and `open_link` on a chat) returns the chat's pinned messages, where groups and
+channels usually keep their index, plus a user's profile channel or a channel's discussion
+group. Telegram rate-limits `@username` lookups, so resolved usernames are cached per server run.
 
 Write tools act as you, under your name. Messages from anyone who can reach you end up in
 the agent's context, so only enable them for agents you trust with your account.

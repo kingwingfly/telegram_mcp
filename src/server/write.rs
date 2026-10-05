@@ -1,13 +1,15 @@
 use std::path::Path;
 
 use grammers_client::message::InputMessage;
+use grammers_session::types::PeerKind;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{
-    ChatParams, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info, fail, message_info,
+    ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info, fail,
+    message_info, parse_link,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -289,9 +291,13 @@ impl TelegramMcp {
         self.client.mark_as_read(peer).await.map_err(fail)?;
         Ok(format!("marked {} as read", params.chat))
     }
+}
 
+/// Entering and leaving chats: registered with `serve --allow-join` (or `--allow-send`).
+#[tool_router(router = membership_tools, vis = "pub(super)")]
+impl TelegramMcp {
     #[tool(
-        description = "Join a public group or channel, or accept an invite link, as the user.",
+        description = "Join a group or channel as the user: @username, t.me link, or invite link. Public chats can be read without joining.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -302,11 +308,12 @@ impl TelegramMcp {
         &self,
         Parameters(params): Parameters<JoinChatParams>,
     ) -> Result<String, String> {
-        let joined = if params.chat.contains("/+") || params.chat.contains("/joinchat/") {
-            self.client.accept_invite_link(&params.chat).await
-        } else {
-            let peer = self.resolve(&params.chat).await?;
-            self.client.join_chat(peer).await
+        let joined = match parse_link(&params.chat)?.chat {
+            ChatRef::Invite(_) => self.client.accept_invite_link(&params.chat).await,
+            chat => {
+                let peer = self.resolve_chat(&chat).await?;
+                self.client.join_chat(peer).await
+            }
         };
         Ok(match joined.map_err(fail)? {
             Some(peer) => {
@@ -315,5 +322,26 @@ impl TelegramMcp {
             }
             None => format!("joined {}", params.chat),
         })
+    }
+
+    #[tool(
+        description = "Leave a group or channel as the user.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn leave_chat(
+        &self,
+        Parameters(params): Parameters<ChatParams>,
+    ) -> Result<String, String> {
+        let peer = self.resolve(&params.chat).await?;
+        // For private chats grammers' delete_dialog deletes the history instead.
+        if peer.id.kind() == PeerKind::User {
+            return Err("leave_chat only works for groups and channels".to_owned());
+        }
+        self.client.delete_dialog(peer).await.map_err(fail)?;
+        Ok(format!("left {}", params.chat))
     }
 }

@@ -1,7 +1,7 @@
 use grammers_client::media::Media;
 use grammers_client::peer::{Peer, Role};
 use grammers_client::tl;
-use grammers_session::types::PeerKind;
+use grammers_session::types::{PeerKind, PeerRef};
 use jiff::Timestamp;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
@@ -9,7 +9,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ChatInfo, ChatParams, MessageParams, Messages, TelegramMcp, chat_info, fail, message_info,
+    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info,
+    fail, message_info, parse_link,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -45,7 +46,9 @@ struct GetMessagesParams {
     limit: Option<usize>,
     /// Only messages older than this message id, for paging.
     before_id: Option<i32>,
-    /// Fetch exactly these message ids instead; `limit` and `before_id` are ignored.
+    /// Only messages newer than this message id, oldest first (e.g. to read on from a linked message).
+    after_id: Option<i32>,
+    /// Fetch exactly these message ids instead; `limit`, `before_id` and `after_id` are ignored.
     ids: Option<Vec<i32>>,
 }
 
@@ -99,6 +102,48 @@ struct ChatDetails {
     about: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     members: Option<i32>,
+    /// Channel shown on a user's profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    personal_channel: Option<ChatInfo>,
+    /// A channel's discussion group, or a discussion group's channel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linked_chat: Option<ChatInfo>,
+    /// Pinned messages, newest first (up to 5). In groups and channels these often index
+    /// the chat's content.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pinned_messages: Vec<MessageInfo>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct OpenLinkParams {
+    /// A t.me / telegram.me / tg:// link to a chat, user, message or invite, or an @username.
+    link: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct OpenedLink {
+    /// The linked chat or user; for message links, the chat the message is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat: Option<ChatDetails>,
+    /// The linked message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<MessageInfo>,
+    /// What an invite link leads to. Nothing is joined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invite: Option<InvitePreview>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct InvitePreview {
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    about: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    members: Option<i32>,
+    already_member: bool,
+    /// Set when the chat is readable now (already a member, or the invite allows a preview).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_id: Option<i64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -174,7 +219,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Get messages from a chat, newest first, or specific messages by id.",
+        description = "Get messages from a chat, newest first (or oldest first after a given message), or specific messages by id.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn get_messages(
@@ -199,8 +244,13 @@ impl TelegramMcp {
                     .client
                     .iter_messages(peer)
                     .limit(params.limit.unwrap_or(20).min(100));
-                if let Some(id) = params.before_id {
-                    iter = iter.offset_id(id);
+                match (params.before_id, params.after_id) {
+                    (Some(_), Some(_)) => {
+                        return Err("pass either before_id or after_id, not both".to_owned());
+                    }
+                    (Some(id), None) => iter = iter.offset_id(id),
+                    (None, Some(id)) => iter = iter.offset_id(id).reverse(true),
+                    (None, None) => {}
                 }
                 let mut messages = Vec::new();
                 while let Some(message) = iter.next().await.map_err(fail)? {
@@ -298,60 +348,79 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Get details of a user, group or channel: name, kind, username, bio/description and member count.",
+        description = "Open a group, channel or user: name, kind, username, bio/description, member count, profile channel, linked discussion chat, and pinned messages (often an index of the chat's content).",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn get_chat(
         &self,
         Parameters(params): Parameters<ChatParams>,
     ) -> Result<Json<ChatDetails>, String> {
-        let peer_ref = self.resolve(&params.chat).await?;
-        let peer = self.client.resolve_peer(peer_ref).await.map_err(fail)?;
-        let (about, members) = if peer_ref.id.kind() == PeerKind::User {
-            let tl::enums::users::UserFull::Full(full) = self
+        let peer = self.resolve(&params.chat).await?;
+        Ok(Json(self.chat_details(peer).await?))
+    }
+
+    #[tool(
+        description = "Open a Telegram link (t.me/…, telegram.me/…, tg://…) or @username, e.g. one found in a message: returns the linked message, the chat or user (with pinned messages), or what an invite link leads to without joining. Not for web links.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn open_link(
+        &self,
+        Parameters(params): Parameters<OpenLinkParams>,
+    ) -> Result<Json<OpenedLink>, String> {
+        let link = parse_link(&params.link)?;
+        if let ChatRef::Invite(hash) = link.chat {
+            let invite = self
                 .client
-                .invoke(&tl::functions::users::GetFullUser {
-                    id: (&peer_ref).into(),
-                })
+                .invoke(&tl::functions::messages::CheckChatInvite { hash })
                 .await
                 .map_err(fail)?;
-            let tl::enums::UserFull::Full(user) = full.full_user;
-            (user.about, None)
-        } else {
-            let full = if peer_ref.id.kind() == PeerKind::Chat {
-                self.client
-                    .invoke(&tl::functions::messages::GetFullChat {
-                        chat_id: peer_ref.id.bare_id_unchecked(),
-                    })
-                    .await
-            } else {
-                self.client
-                    .invoke(&tl::functions::channels::GetFullChannel {
-                        channel: (&peer_ref).into(),
-                    })
-                    .await
+            let already_member = matches!(invite, tl::enums::ChatInvite::Already(_));
+            let preview = match invite {
+                tl::enums::ChatInvite::Already(tl::types::ChatInviteAlready { chat })
+                | tl::enums::ChatInvite::Peek(tl::types::ChatInvitePeek { chat, .. }) => {
+                    let chat = chat_info(&Peer::from_raw(&self.client, chat));
+                    InvitePreview {
+                        title: chat.name,
+                        about: None,
+                        members: None,
+                        already_member,
+                        chat_id: Some(chat.id),
+                    }
+                }
+                tl::enums::ChatInvite::Invite(invite) => InvitePreview {
+                    title: invite.title,
+                    about: invite.about,
+                    members: Some(invite.participants_count),
+                    already_member,
+                    chat_id: None,
+                },
             };
-            let tl::enums::messages::ChatFull::Full(full) = full.map_err(fail)?;
-            match full.full_chat {
-                tl::enums::ChatFull::Full(chat) => {
-                    let members = match chat.participants {
-                        tl::enums::ChatParticipants::Participants(list) => {
-                            Some(list.participants.len() as i32)
-                        }
-                        tl::enums::ChatParticipants::Forbidden(_) => None,
-                    };
-                    (Some(chat.about), members)
-                }
-                tl::enums::ChatFull::ChannelFull(channel) => {
-                    (Some(channel.about), channel.participants_count)
-                }
-                tl::enums::ChatFull::CommunityFull(community) => (Some(community.about), None),
-            }
+            return Ok(Json(OpenedLink {
+                chat: None,
+                message: None,
+                invite: Some(preview),
+            }));
+        }
+
+        let peer = self.resolve_chat(&link.chat).await?;
+        let message = match link.message_id {
+            Some(id) => Some(
+                self.client
+                    .get_messages_by_id(peer, &[id])
+                    .await
+                    .map_err(fail)?
+                    .iter()
+                    .flatten()
+                    .find(|message| !matches!(message.raw, tl::enums::Message::Empty(_)))
+                    .map(|message| message_info(message, self.me))
+                    .ok_or(format!("message {id} not found"))?,
+            ),
+            None => None,
         };
-        Ok(Json(ChatDetails {
-            chat: chat_info(&peer),
-            about: about.filter(|about| !about.is_empty()),
-            members,
+        Ok(Json(OpenedLink {
+            chat: Some(self.chat_details(peer).await?),
+            message,
+            invite: None,
         }))
     }
 
@@ -434,5 +503,90 @@ impl TelegramMcp {
         Ok(Json(Downloaded {
             path: path.display().to_string(),
         }))
+    }
+}
+
+impl TelegramMcp {
+    async fn chat_details(&self, peer_ref: PeerRef) -> Result<ChatDetails, String> {
+        let peer = self.client.resolve_peer(peer_ref).await.map_err(fail)?;
+        // Full-info responses list the profile channel / linked chat among their `chats`.
+        let find_chat = |chats: Vec<tl::enums::Chat>, id: Option<i64>| {
+            let id = id?;
+            chats
+                .into_iter()
+                .map(|chat| Peer::from_raw(&self.client, chat))
+                .find(|peer| peer.id().bare_id() == Some(id))
+                .map(|peer| chat_info(&peer))
+        };
+        let (about, members, personal_channel, linked_chat) =
+            if peer_ref.id.kind() == PeerKind::User {
+                let tl::enums::users::UserFull::Full(full) = self
+                    .client
+                    .invoke(&tl::functions::users::GetFullUser {
+                        id: (&peer_ref).into(),
+                    })
+                    .await
+                    .map_err(fail)?;
+                let tl::enums::UserFull::Full(user) = full.full_user;
+                let personal_channel = find_chat(full.chats, user.personal_channel_id);
+                (user.about, None, personal_channel, None)
+            } else {
+                let full = if peer_ref.id.kind() == PeerKind::Chat {
+                    self.client
+                        .invoke(&tl::functions::messages::GetFullChat {
+                            chat_id: peer_ref.id.bare_id_unchecked(),
+                        })
+                        .await
+                } else {
+                    self.client
+                        .invoke(&tl::functions::channels::GetFullChannel {
+                            channel: (&peer_ref).into(),
+                        })
+                        .await
+                };
+                let tl::enums::messages::ChatFull::Full(full) = full.map_err(fail)?;
+                match full.full_chat {
+                    tl::enums::ChatFull::Full(chat) => {
+                        let members = match chat.participants {
+                            tl::enums::ChatParticipants::Participants(list) => {
+                                Some(list.participants.len() as i32)
+                            }
+                            tl::enums::ChatParticipants::Forbidden(_) => None,
+                        };
+                        (Some(chat.about), members, None, None)
+                    }
+                    tl::enums::ChatFull::ChannelFull(channel) => {
+                        let linked_chat = find_chat(full.chats, channel.linked_chat_id);
+                        (
+                            Some(channel.about),
+                            channel.participants_count,
+                            None,
+                            linked_chat,
+                        )
+                    }
+                    tl::enums::ChatFull::CommunityFull(community) => {
+                        (Some(community.about), None, None, None)
+                    }
+                }
+            };
+
+        let mut pinned = self
+            .client
+            .search_messages(peer_ref)
+            .filter(tl::enums::MessagesFilter::InputMessagesFilterPinned)
+            .limit(5);
+        let mut pinned_messages = Vec::new();
+        while let Some(message) = pinned.next().await.map_err(fail)? {
+            pinned_messages.push(message_info(&message, self.me));
+        }
+
+        Ok(ChatDetails {
+            chat: chat_info(&peer),
+            about: about.filter(|about| !about.is_empty()),
+            members,
+            personal_channel,
+            linked_chat,
+            pinned_messages,
+        })
     }
 }
