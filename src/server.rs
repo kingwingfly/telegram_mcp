@@ -60,14 +60,17 @@ impl ServerHandler for TelegramMcp {
             .map(|group| match group {
                 Access::Contacts => "joining/leaving chats and managing contacts",
                 Access::Send => {
-                    "sending, editing, deleting, forwarding, reacting, pinning and clicking buttons"
+                    "sending, editing, deleting, forwarding, reacting, pinning, marking chats read and clicking buttons"
                 }
             })
             .collect();
         let mode = if enabled.is_empty() {
             "Read-only: tools that act as this user are disabled.".to_owned()
         } else {
-            format!("Enabled, and done as this user: {}.", enabled.join("; "))
+            format!(
+                "Enabled, and done as this user: {}. Anything else acting as this user is disabled.",
+                enabled.join("; ")
+            )
         };
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
@@ -140,10 +143,14 @@ impl TelegramMcp {
                 self.usernames.lock().unwrap().insert(key, peer);
                 Ok(peer)
             }
-            ChatRef::Invite(_) => Err(
+            // join_chat is only registered with `--access contacts`.
+            ChatRef::Invite(_) if self.access.contains(&Access::Contacts) => Err(
                 "this is an invite link: preview it with open_link, or join with join_chat"
                     .to_owned(),
             ),
+            ChatRef::Invite(_) => {
+                Err("this is an invite link: preview it with open_link".to_owned())
+            }
         }
     }
 }
