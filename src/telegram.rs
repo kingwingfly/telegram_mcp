@@ -5,7 +5,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use grammers_client::peer::User;
 use grammers_client::{Client, SenderPool};
-use grammers_session::storages::SqliteSession;
+use grammers_session::BoxFuture;
+use grammers_session::storages::{SqliteSession, SqliteSessionError};
+use grammers_session::types::{DcOption, PeerId, PeerInfo, UpdateState, UpdatesState};
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
@@ -14,7 +16,7 @@ use crate::config::Config;
 pub struct Telegram {
     pub client: Client,
     /// Shared with the client; used to look up cached peer access hashes.
-    pub session: Arc<SqliteSession>,
+    pub session: Arc<Session>,
     runner: JoinHandle<()>,
 }
 
@@ -42,7 +44,7 @@ impl Telegram {
         }
 
         // Updates are not consumed yet; dropping the receiver is safe (sends are ignored).
-        let session = Arc::new(session);
+        let session = Arc::new(Session(session));
         let SenderPool { runner, handle, .. } = SenderPool::new(session.clone(), config.api_id);
         let client = Client::new(handle);
         let runner = tokio::spawn(runner.run());
@@ -67,5 +69,46 @@ pub fn describe(user: &User) -> String {
     match user.username() {
         Some(username) => format!("{} (@{username}, id {id})", user.full_name()),
         None => format!("{} (id {id})", user.full_name()),
+    }
+}
+
+/// `SqliteSession` with the trait's one-by-one `cache_peers`. The SQLite batch version
+/// (grammers git e7730ae) only stores the first new peer of each batch, so access hashes of
+/// most chats in a response were lost and their ids failed in later requests.
+pub struct Session(SqliteSession);
+
+impl grammers_session::Session for Session {
+    type Error = SqliteSessionError;
+
+    fn home_dc_id(&self) -> Result<i32, Self::Error> {
+        self.0.home_dc_id()
+    }
+
+    fn set_home_dc_id(&self, dc_id: i32) -> BoxFuture<'_, Result<(), Self::Error>> {
+        self.0.set_home_dc_id(dc_id)
+    }
+
+    fn dc_option(&self, dc_id: i32) -> Result<Option<DcOption>, Self::Error> {
+        self.0.dc_option(dc_id)
+    }
+
+    fn set_dc_option(&self, dc_option: &DcOption) -> BoxFuture<'_, Result<(), Self::Error>> {
+        self.0.set_dc_option(dc_option)
+    }
+
+    fn peer(&self, peer: PeerId) -> BoxFuture<'_, Result<Option<PeerInfo>, Self::Error>> {
+        self.0.peer(peer)
+    }
+
+    fn cache_peer(&self, peer: PeerInfo) -> BoxFuture<'_, Result<(), Self::Error>> {
+        self.0.cache_peer(peer)
+    }
+
+    fn updates_state(&self) -> BoxFuture<'_, Result<UpdatesState, Self::Error>> {
+        self.0.updates_state()
+    }
+
+    fn set_update_state(&self, update: UpdateState) -> BoxFuture<'_, Result<(), Self::Error>> {
+        self.0.set_update_state(update)
     }
 }

@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use grammers_client::message::InputMessage;
+use grammers_client::peer::{Peer, User};
+use grammers_client::tl;
 use grammers_session::types::PeerKind;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
@@ -8,8 +10,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::{
-    ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info, fail,
-    message_info, parse_link,
+    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info,
+    fail, message_info, parse_link,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -66,6 +68,23 @@ struct SendReactionParams {
     message_id: i32,
     /// A single emoji, e.g. 👍. Must be allowed in the chat.
     emoji: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct AddContactParams {
+    /// The user to add: `@username`, a t.me link, or a numeric id. Omit when adding by `phone`.
+    user: Option<String>,
+    /// Phone number in international format, to add someone by phone instead of `user`.
+    phone: Option<String>,
+    /// Name to save the contact under; defaults to their profile name. Required with `phone`.
+    first_name: Option<String>,
+    last_name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct UserParams {
+    /// `@username`, a t.me link, or a numeric id of a user.
+    user: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -272,6 +291,107 @@ impl TelegramMcp {
             .await
             .map_err(fail)?;
         Ok(format!("unpinned message {}", params.message_id))
+    }
+
+    #[tool(
+        description = "Add someone to the user's Telegram contacts, by @username/id/link or by phone number. The user's own phone number is not shared.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn add_contact(
+        &self,
+        Parameters(params): Parameters<AddContactParams>,
+    ) -> Result<Json<ChatInfo>, String> {
+        let contact = match (params.user, params.phone) {
+            (Some(user), None) => {
+                let peer = self.resolve(&user).await?;
+                let Peer::User(found) = self.client.resolve_peer(peer).await.map_err(fail)? else {
+                    return Err(format!("{user} is not a user"));
+                };
+                // Without names this would overwrite the name an existing contact is saved under.
+                if found.contact() && params.first_name.is_none() && params.last_name.is_none() {
+                    return Ok(Json(chat_info(&Peer::User(found))));
+                }
+                let first_name = params
+                    .first_name
+                    .unwrap_or_else(|| found.first_name().unwrap_or_default().to_owned());
+                let last_name = params
+                    .last_name
+                    .unwrap_or_else(|| found.last_name().unwrap_or_default().to_owned());
+                self.client
+                    .invoke(&tl::functions::contacts::AddContact {
+                        add_phone_privacy_exception: false,
+                        id: (&peer).into(),
+                        first_name,
+                        last_name,
+                        phone: String::new(),
+                        note: None,
+                    })
+                    .await
+                    .map_err(fail)?;
+                Peer::User(found)
+            }
+            (None, Some(phone)) => {
+                let first_name = params
+                    .first_name
+                    .ok_or("first_name is required when adding by phone")?;
+                let tl::enums::contacts::ImportedContacts::Contacts(imported) = self
+                    .client
+                    .invoke(&tl::functions::contacts::ImportContacts {
+                        contacts: vec![
+                            tl::types::InputPhoneContact {
+                                client_id: 0,
+                                phone: phone
+                                    .chars()
+                                    .filter(|c| c.is_ascii_digit() || *c == '+')
+                                    .collect(),
+                                first_name,
+                                last_name: params.last_name.unwrap_or_default(),
+                                note: None,
+                            }
+                            .into(),
+                        ],
+                    })
+                    .await
+                    .map_err(fail)?;
+                self.cache_peers(&[], &imported.users).await?;
+                let user = imported.users.into_iter().next().ok_or(
+                    "no Telegram account found for this number (it may not exist, or hide itself from phone search)",
+                )?;
+                Peer::User(User::from_raw(&self.client, user))
+            }
+            _ => return Err("pass exactly one of `user` or `phone`".to_owned()),
+        };
+        Ok(Json(chat_info(&contact)))
+    }
+
+    #[tool(
+        description = "Remove someone from the user's Telegram contacts.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn delete_contact(
+        &self,
+        Parameters(params): Parameters<UserParams>,
+    ) -> Result<String, String> {
+        let peer = self.resolve(&params.user).await?;
+        if peer.id.kind() != PeerKind::User {
+            return Err(format!("{} is not a user", params.user));
+        }
+        self.client
+            .invoke(&tl::functions::contacts::DeleteContacts {
+                id: vec![(&peer).into()],
+            })
+            .await
+            .map_err(fail)?;
+        Ok(format!("removed {} from contacts", params.user))
     }
 
     #[tool(

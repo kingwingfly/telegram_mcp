@@ -1,7 +1,7 @@
 use grammers_client::media::Media;
-use grammers_client::peer::{Peer, Role};
+use grammers_client::peer::{Peer, Role, User};
 use grammers_client::tl;
-use grammers_session::types::{PeerKind, PeerRef};
+use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use jiff::Timestamp;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::{tool, tool_router};
@@ -91,6 +91,33 @@ struct SearchMessagesParams {
     limit: Option<usize>,
     /// Only messages older than this message id, for paging. Requires `chat`.
     before_id: Option<i32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct GetRepliesParams {
+    /// Chat of the post or message: `me`, `@username`, a t.me link, or a numeric id.
+    chat: String,
+    /// The channel post or group message whose replies to read.
+    message_id: i32,
+    /// Maximum replies, newest first (default 20, max 100).
+    limit: Option<usize>,
+    /// Only replies older than this id, for paging.
+    before_id: Option<i32>,
+    /// Only replies newer than this id, oldest first.
+    after_id: Option<i32>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct Contacts {
+    contacts: Vec<ChatInfo>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct Replies {
+    /// Number of replies in the whole thread.
+    total: i32,
+    /// For channel posts these live in the linked discussion group (see each `chat_id`).
+    messages: Vec<MessageInfo>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -263,6 +290,125 @@ impl TelegramMcp {
     }
 
     #[tool(
+        description = "Read the comments under a channel post, or the reply thread of a group message or forum topic. Messages show a `replies` count when there is something to read.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn get_replies(
+        &self,
+        Parameters(params): Parameters<GetRepliesParams>,
+    ) -> Result<Json<Replies>, String> {
+        let peer = self.resolve(&params.chat).await?;
+        let limit = params.limit.unwrap_or(20).min(100) as i32;
+        let (offset_id, add_offset, min_id) = match (params.before_id, params.after_id) {
+            (Some(_), Some(_)) => {
+                return Err("pass either before_id or after_id, not both".to_owned());
+            }
+            (Some(id), None) => (id, 0, 0),
+            // The page of `limit` replies just above `id` (as grammers' reverse iteration does).
+            (None, Some(id)) => (id, -limit, id),
+            (None, None) => (0, 0, 0),
+        };
+        let response = self
+            .client
+            .invoke(&tl::functions::messages::GetReplies {
+                peer: (&peer).into(),
+                msg_id: params.message_id,
+                offset_id,
+                offset_date: 0,
+                add_offset,
+                limit,
+                max_id: 0,
+                min_id,
+                hash: 0,
+            })
+            .await
+            .map_err(fail)?;
+        let (raw, chats, users, total) = match response {
+            tl::enums::messages::Messages::Messages(page) => {
+                let total = page.messages.len() as i32;
+                (page.messages, page.chats, page.users, total)
+            }
+            tl::enums::messages::Messages::Slice(page) => {
+                (page.messages, page.chats, page.users, page.count)
+            }
+            tl::enums::messages::Messages::ChannelMessages(page) => {
+                (page.messages, page.chats, page.users, page.count)
+            }
+            tl::enums::messages::Messages::NotModified(_) => {
+                (Vec::new(), Vec::new(), Vec::new(), 0)
+            }
+        };
+        self.cache_peers(&chats, &users).await?;
+
+        // grammers can only build full messages from its own requests, so refetch the replies
+        // by id from the chat they live in, whose access hash comes with this response.
+        let mut ids = Vec::with_capacity(raw.len());
+        let mut thread_chat = None;
+        for message in raw {
+            if let tl::enums::Message::Message(message) = message {
+                thread_chat.get_or_insert(PeerId::from(message.peer_id));
+                ids.push(message.id);
+            }
+        }
+        let Some(thread_chat) = thread_chat else {
+            return Ok(Json(Replies {
+                total,
+                messages: Vec::new(),
+            }));
+        };
+        let thread_peer = if thread_chat == peer.id {
+            peer
+        } else {
+            let chat = chats
+                .into_iter()
+                .map(|chat| Peer::from_raw(&self.client, chat))
+                .find(|chat| chat.id() == thread_chat)
+                .ok_or("the replies' chat was missing from Telegram's response")?;
+            chat.to_ref()
+                .await
+                .map_err(fail)?
+                .ok_or("the replies' chat is not accessible")?
+        };
+        if params.after_id.is_some() {
+            ids.reverse();
+        }
+        let messages = self
+            .client
+            .get_messages_by_id(thread_peer, &ids)
+            .await
+            .map_err(fail)?
+            .iter()
+            .flatten()
+            .filter(|message| !matches!(message.raw, tl::enums::Message::Empty(_)))
+            .map(|message| message_info(message, self.me))
+            .collect();
+        Ok(Json(Replies { total, messages }))
+    }
+
+    #[tool(
+        description = "List the user's Telegram contacts.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn list_contacts(&self) -> Result<Json<Contacts>, String> {
+        let users = match self
+            .client
+            .invoke(&tl::functions::contacts::GetContacts { hash: 0 })
+            .await
+            .map_err(fail)?
+        {
+            tl::enums::contacts::Contacts::Contacts(list) => list.users,
+            tl::enums::contacts::Contacts::NotModified => Vec::new(),
+        };
+        self.cache_peers(&[], &users).await?;
+        Ok(Json(Contacts {
+            contacts: users
+                .into_iter()
+                .map(|user| chat_info(&Peer::User(User::from_raw(&self.client, user))))
+                .collect(),
+        }))
+    }
+
+    #[tool(
         description = "Search messages by text and/or content type, in one chat or across all chats. Newest first.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
@@ -378,6 +524,7 @@ impl TelegramMcp {
             let preview = match invite {
                 tl::enums::ChatInvite::Already(tl::types::ChatInviteAlready { chat })
                 | tl::enums::ChatInvite::Peek(tl::types::ChatInvitePeek { chat, .. }) => {
+                    self.cache_peers(std::slice::from_ref(&chat), &[]).await?;
                     let chat = chat_info(&Peer::from_raw(&self.client, chat));
                     InvitePreview {
                         title: chat.name,
@@ -527,6 +674,7 @@ impl TelegramMcp {
                     })
                     .await
                     .map_err(fail)?;
+                self.cache_peers(&full.chats, &full.users).await?;
                 let tl::enums::UserFull::Full(user) = full.full_user;
                 let personal_channel = find_chat(full.chats, user.personal_channel_id);
                 (user.about, None, personal_channel, None)
@@ -545,6 +693,7 @@ impl TelegramMcp {
                         .await
                 };
                 let tl::enums::messages::ChatFull::Full(full) = full.map_err(fail)?;
+                self.cache_peers(&full.chats, &full.users).await?;
                 match full.full_chat {
                     tl::enums::ChatFull::Full(chat) => {
                         let members = match chat.participants {

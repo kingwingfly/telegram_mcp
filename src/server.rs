@@ -11,9 +11,8 @@ use grammers_client::media::Media;
 use grammers_client::message::Message;
 use grammers_client::peer::Peer;
 use grammers_client::{Client, tl};
-use grammers_session::Session;
-use grammers_session::storages::SqliteSession;
-use grammers_session::types::{PeerId, PeerKind, PeerRef};
+use grammers_session::Session as _;
+use grammers_session::types::{PeerId, PeerInfo, PeerKind, PeerRef};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::transport::stdio;
@@ -23,14 +22,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::authorized_user;
 use crate::config::Config;
-use crate::telegram::{Telegram, describe};
+use crate::telegram::{Session, Telegram, describe};
 
 /// Read tools live in `read.rs`; tools that act as the user live in `write.rs`:
 /// join/leave are registered with `serve --allow-join`, everything with `--allow-send`.
 #[derive(Clone)]
 pub struct TelegramMcp {
     client: Client,
-    session: Arc<SqliteSession>,
+    session: Arc<Session>,
     /// The logged-in user, which `chat: "me"` resolves to.
     me: PeerRef,
     /// Lowercased username -> peer. Telegram rate-limits username lookups hard (FLOOD_WAIT).
@@ -76,6 +75,21 @@ impl TelegramMcp {
     /// Turns a `chat` argument (anything `parse_link` accepts) into a peer reference.
     async fn resolve(&self, chat: &str) -> Result<PeerRef, String> {
         self.resolve_chat(&parse_link(chat)?.chat).await
+    }
+
+    /// Caches the access hashes of peers in a raw API response, so the ids tools report for
+    /// them work as `chat` later. grammers only does this for its own high-level requests.
+    async fn cache_peers(
+        &self,
+        chats: &[tl::enums::Chat],
+        users: &[tl::enums::User],
+    ) -> Result<(), String> {
+        let peers = chats
+            .iter()
+            .map(PeerInfo::from)
+            .chain(users.iter().map(PeerInfo::from))
+            .collect();
+        self.session.cache_peers(peers).await.map_err(fail)
     }
 
     async fn resolve_chat(&self, chat: &ChatRef) -> Result<PeerRef, String> {
@@ -328,6 +342,9 @@ struct MessageInfo {
     outgoing: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_to: Option<i32>,
+    /// Number of comments (channel posts) or thread replies; read them with get_replies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replies: Option<i32>,
     /// Where a forwarded message came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     forwarded_from: Option<ForwardSource>,
@@ -486,6 +503,7 @@ fn message_info(message: &Message, me: PeerRef) -> MessageInfo {
         // Telegram reports `out = false` in Saved Messages, so also compare the sender.
         outgoing: message.outgoing() || message.sender_id() == Some(me.id),
         reply_to: message.reply_to_message_id(),
+        replies: message.reply_count().filter(|count| *count > 0),
         forwarded_from,
         text: message.markdown_text(),
         media,

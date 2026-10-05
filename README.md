@@ -57,12 +57,14 @@ Markdown; messages also carry their link buttons, link-preview URL, forward sour
 | Read (always on) | Join (`--allow-join`) | Write (`--allow-send`, includes join) |
 |---|---|---|
 | `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
-| `get_messages`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
-| `open_link`, `download_media` | | `mark_as_read` |
+| `get_messages`, `get_replies`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
+| `open_link`, `download_media`, `list_contacts` | | `mark_as_read`, `add_contact`, `delete_contact` |
 
 `get_chat` (and `open_link` on a chat) returns the chat's pinned messages, where groups and
 channels usually keep their index, plus a user's profile channel or a channel's discussion
-group. Telegram rate-limits `@username` lookups, so resolved usernames are cached per server run.
+group. Messages show a `replies` count; `get_replies` reads a channel post's comments (from its
+discussion group) or a group message's reply thread. Telegram rate-limits `@username` lookups,
+so resolved usernames are cached per server run.
 
 Write tools act as you, under your name. Messages from anyone who can reach you end up in
 the agent's context, so only enable them for agents you trust with your account.
