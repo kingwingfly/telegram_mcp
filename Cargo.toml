@@ -1,0 +1,20 @@
+[package]
+name = "telegram-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
+dirs = "7.0.0"
+dotenvy = "0.15.7"
+grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", features = ["markdown", "parse_invite_link"] }
+grammers-session = { git = "https://codeberg.org/Lonami/grammers.git" }
+jiff = "0.2"
+rmcp = { version = "3.5.0", features = ["server", "transport-io", "macros"] }
+schemars = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
