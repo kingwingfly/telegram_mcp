@@ -137,7 +137,7 @@ struct ChatDetails {
     linked_chat: Option<ChatInfo>,
     /// Pinned messages, newest first (up to 5). In groups and channels these often index
     /// the chat's content.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pinned_messages: Vec<MessageInfo>,
 }
 

@@ -94,7 +94,7 @@ struct ClickResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<MessageInfo>,
     /// Messages the chat received after the click, oldest first.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     new_messages: Vec<MessageInfo>,
 }
 

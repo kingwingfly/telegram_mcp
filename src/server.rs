@@ -374,7 +374,7 @@ struct MessageInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     media: Option<String>,
     /// Buttons under the message (or the bot keyboard it shows); see click_button.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     buttons: Vec<Button>,
     /// t.me link to this message, for groups and channels.
     #[serde(skip_serializing_if = "Option::is_none")]

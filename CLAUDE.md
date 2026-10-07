@@ -52,6 +52,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - Tool conventions:
   - Every tool takes `chat` as a string and calls `self.resolve(...)`, which accepts anything `parse_link` does. Numeric ids need the peer's access hash, which `resolve` reads from the session cache; the client fills that cache automatically whenever peers are seen, e.g. by `list_chats`. Usernames are cached in memory (`TelegramMcp::usernames`) because `contacts.resolveUsername` hits FLOOD_WAIT quickly.
   - Tools return `Result<Json<T>, String>` (or `Result<String, String>` for plain acknowledgements). `Err(String)` becomes an `isError` result the agent can read; map errors with `.map_err(fail)`. `Json<T>` must wrap an object, never a bare `Vec`.
+  - Output fields left out with `skip_serializing_if` must be `Option` or also carry `#[serde(default)]` (e.g. `Vec` fields). Otherwise schemars lists them as `required` in the output schema, and clients that validate (Claude Code does) reject the whole result.
   - Buttons: `message_buttons` decodes inline and reply-keyboard markup once, as (`Button` for output, `ButtonAction` for `click_button`); add new button types there.
   - Message text is Markdown in both directions (grammers `markdown` feature: `message.markdown_text()` / `InputMessage::markdown`).
 
