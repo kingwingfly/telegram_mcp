@@ -12,6 +12,7 @@ use grammers_client::message::Message;
 use grammers_client::peer::Peer;
 use grammers_client::{Client, tl};
 use grammers_session::Session as _;
+use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerInfo, PeerKind, PeerRef};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -22,14 +23,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::authorized_user;
 use crate::config::Config;
-use crate::telegram::{Session, Telegram, describe};
+use crate::telegram::{Telegram, describe};
 
 /// Read tools live in `read.rs`; tools that act as the user live in `write.rs` and are
 /// registered according to `serve --access`.
 #[derive(Clone)]
 pub struct TelegramMcp {
     client: Client,
-    session: Arc<Session>,
+    session: Arc<SqliteSession>,
     /// The logged-in user, which `chat: "me"` resolves to.
     me: PeerRef,
     /// Lowercased username -> peer. Telegram rate-limits username lookups hard (FLOOD_WAIT).

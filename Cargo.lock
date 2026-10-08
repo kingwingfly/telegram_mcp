@@ -741,7 +741,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 [[package]]
 name = "grammers-client"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "futures-util",
  "grammers-crypto",
@@ -761,7 +761,7 @@ dependencies = [
 [[package]]
 name = "grammers-crypto"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "aes",
  "ctr",
@@ -778,7 +778,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtproto"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -794,7 +794,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtsender"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "bytes",
  "grammers-crypto",
@@ -810,7 +810,7 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "grammers-tl-types",
  "libsql",
@@ -821,7 +821,7 @@ dependencies = [
 [[package]]
 name = "grammers-tl-gen"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "grammers-tl-parser",
 ]
@@ -829,7 +829,7 @@ dependencies = [
 [[package]]
 name = "grammers-tl-parser"
 version = "1.2.2"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "crc32fast",
 ]
@@ -837,7 +837,7 @@ dependencies = [
 [[package]]
 name = "grammers-tl-types"
 version = "0.10.0"
-source = "git+https://codeberg.org/Lonami/grammers.git#e7730ae3e00a5427b9d90f06ee6d2e985b63f8c1"
+source = "git+https://codeberg.org/kingwingfly/grammers.git?branch=fix-sqlite-cache-peers#0d4da349957c5e405e24d8bea20d111872658707"
 dependencies = [
  "grammers-tl-gen",
  "grammers-tl-parser",

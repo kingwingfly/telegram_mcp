@@ -9,8 +9,10 @@ clap = { version = "4.6.7", features = ["derive"] }
 dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
 dirs = "7.0.0"
 dotenvy = "0.15.7"
-grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", features = ["markdown", "parse_invite_link"] }
-grammers-session = { git = "https://codeberg.org/Lonami/grammers.git" }
+# Fork branch with the SqliteSession::cache_peers fix (upstream issue #77); go back to
+# https://codeberg.org/Lonami/grammers.git once upstream fixes it.
+grammers-client = { git = "https://codeberg.org/kingwingfly/grammers.git", branch = "fix-sqlite-cache-peers", features = ["markdown", "parse_invite_link"] }
+grammers-session = { git = "https://codeberg.org/kingwingfly/grammers.git", branch = "fix-sqlite-cache-peers" }
 jiff = "0.2"
 rmcp = { version = "3.5.0", features = ["server", "transport-io", "macros"] }
 schemars = "1"
