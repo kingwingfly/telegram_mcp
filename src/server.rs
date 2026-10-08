@@ -378,6 +378,9 @@ struct MessageInfo {
     /// Summary of the attached media, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     media: Option<String>,
+    /// Reaction counts; get_reactions lists who reacted (not in channels).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reactions: Vec<ReactionCount>,
     /// Buttons under the message (or the bot keyboard it shows); see click_button.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     buttons: Vec<Button>,
@@ -397,6 +400,15 @@ struct ForwardSource {
     /// Shown instead of `chat_id` when the original sender hides their account.
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct ReactionCount {
+    /// An emoji, `custom:<id>` for a custom emoji, or `paid` for Telegram Stars.
+    reaction: String,
+    count: i32,
+    /// The logged-in user reacted with it.
+    mine: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -628,6 +640,24 @@ fn message_info(message: &Message, me: PeerRef) -> MessageInfo {
         )),
         _ => None,
     };
+    let reactions = match &message.raw {
+        tl::enums::Message::Message(message) => message.reactions.as_ref(),
+        tl::enums::Message::Service(message) => message.reactions.as_ref(),
+        tl::enums::Message::Empty(_) => None,
+    };
+    let reactions = reactions
+        .map(|tl::enums::MessageReactions::Reactions(reactions)| {
+            reactions
+                .results
+                .iter()
+                .map(|tl::enums::ReactionCount::Count(count)| ReactionCount {
+                    reaction: reaction_text(&count.reaction),
+                    count: count.count,
+                    mine: count.chosen_order.is_some(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let sender = message.sender();
     MessageInfo {
         id: message.id(),
@@ -643,12 +673,45 @@ fn message_info(message: &Message, me: PeerRef) -> MessageInfo {
         forwarded_from,
         text: message.markdown_text(),
         media,
+        reactions,
         buttons: message_buttons(message)
             .into_iter()
             .map(|(button, _)| button)
             .collect(),
         link,
     }
+}
+
+/// How tools show a reaction; `parse_reaction` reads it back.
+fn reaction_text(reaction: &tl::enums::Reaction) -> String {
+    match reaction {
+        tl::enums::Reaction::Emoji(emoji) => emoji.emoticon.clone(),
+        tl::enums::Reaction::CustomEmoji(custom) => format!("custom:{}", custom.document_id),
+        tl::enums::Reaction::Paid => "paid".to_owned(),
+        tl::enums::Reaction::Empty => String::new(),
+    }
+}
+
+fn parse_reaction(text: &str) -> Result<tl::enums::Reaction, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("a reaction cannot be empty".to_owned());
+    }
+    if text == "paid" {
+        return Ok(tl::enums::Reaction::Paid);
+    }
+    Ok(match text.strip_prefix("custom:") {
+        Some(id) => tl::types::ReactionCustomEmoji {
+            document_id: id
+                .parse()
+                .map_err(|_| format!("{text:?} is not a custom emoji reaction"))?,
+        }
+        .into(),
+        None => tl::types::ReactionEmoji {
+            emoticon: text.to_owned(),
+        }
+        .into(),
+    })
 }
 
 /// Tool errors are returned as text so the agent can read them.

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ButtonAction, ChatInfo, ChatRef, MessageInfo, Messages, TelegramMcp, chat_info, fail,
-    message_buttons, message_info, parse_link,
+    message_buttons, message_info, parse_link, parse_reaction,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -109,8 +109,10 @@ struct SendReactionParams {
     /// The start of that message's `text` as get_messages shows it, at least 20 characters or
     /// all of it (its `media` if it has no text).
     message_text: String,
-    /// A single emoji, e.g. 👍. Must be allowed in the chat.
-    emoji: String,
+    /// The user's reactions after the call, replacing theirs: emoji such as 👍, or `custom:<id>`
+    /// as a message's `reactions` show them. Empty removes them. Each must be allowed in the
+    /// chat; more than one, and custom emoji, need Telegram Premium.
+    reactions: Vec<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -444,10 +446,11 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "React to a message with an emoji, replacing the user's previous reaction.",
+        description = "Set the user's reactions to a message, replacing their previous ones; an empty list removes them.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = true
         )
     )]
@@ -455,19 +458,34 @@ impl TelegramMcp {
         &self,
         Parameters(params): Parameters<SendReactionParams>,
     ) -> Result<String, String> {
+        let reactions = params
+            .reactions
+            .iter()
+            .map(|reaction| match parse_reaction(reaction)? {
+                tl::enums::Reaction::Paid => {
+                    Err("paid reactions spend Telegram Stars; not supported".to_owned())
+                }
+                reaction => Ok(reaction),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let peer = self
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         self.check_messages(peer, &[(params.message_id, &params.message_text)])
             .await?;
         self.client
-            .send_reactions(peer, params.message_id, params.emoji.as_str())
+            .send_reactions(peer, params.message_id, reactions)
             .await
             .map_err(fail)?;
-        Ok(format!(
-            "reacted {} to message {}",
-            params.emoji, params.message_id
-        ))
+        Ok(if params.reactions.is_empty() {
+            format!("removed your reactions from message {}", params.message_id)
+        } else {
+            format!(
+                "reacted {} to message {}",
+                params.reactions.join(" "),
+                params.message_id
+            )
+        })
     }
 
     #[tool(

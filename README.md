@@ -54,14 +54,16 @@ Logs go to stderr (`RUST_LOG` controls verbosity), since stdout carries the prot
 
 Chats are given as `me` (Saved Messages), `@username`, a numeric id from `list_chats`, or any
 Telegram link (`t.me/…`, `telegram.me/…`, `tg://…`, including message links). Message text is
-Markdown; messages also carry their buttons (inline and bot keyboards), link-preview URL, forward
-source and t.me link. `click_button` presses a bot's callback button (next page, filters) and
-returns the bot's answer, the message as edited by the bot, and any messages it sent.
+Markdown; messages also carry their buttons (inline and bot keyboards), reaction counts,
+link-preview URL, forward source and t.me link. `get_reactions` lists who reacted (not in
+channels); `send_reaction` sets your reactions to a message, and an empty list removes them.
+`click_button` presses a bot's callback button (next page, filters) and returns the bot's
+answer, the message as edited by the bot, and any messages it sent.
 
 | Read (always on) | `--access contacts` | `--access send` |
 |---|---|---|
 | `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
-| `get_messages`, `get_replies`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
+| `get_messages`, `get_replies`, `get_reactions`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
 | `open_link`, `download_media`, `list_contacts` | `add_contact`, `delete_contact` | `mark_as_read`, `click_button` |
 
 `get_chat` (and `open_link` on a chat) returns the chat's pinned messages, where groups and

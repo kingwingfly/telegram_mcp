@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info,
-    fail, message_info, parse_link,
+    fail, message_info, parse_link, parse_reaction, reaction_text,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -105,6 +105,39 @@ struct GetRepliesParams {
     before_id: Option<i32>,
     /// Only replies newer than this id, oldest first.
     after_id: Option<i32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct GetReactionsParams {
+    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    chat: String,
+    message_id: i32,
+    /// Only this reaction, as the message's `reactions` show it.
+    reaction: Option<String>,
+    /// Maximum results, newest first (default 20, max 100).
+    limit: Option<usize>,
+    /// The previous page's `next_offset`.
+    offset: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct Reactions {
+    /// Number of reactions (of `reaction`, if given) on the message.
+    total: i32,
+    reactions: Vec<PeerReaction>,
+    /// Pass as `offset` for the next page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct PeerReaction {
+    /// Who reacted.
+    #[serde(flatten)]
+    peer: ChatInfo,
+    reaction: String,
+    /// RFC 3339, UTC.
+    date: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -383,6 +416,65 @@ impl TelegramMcp {
             .map(|message| message_info(message, self.me))
             .collect();
         Ok(Json(Replies { total, messages }))
+    }
+
+    #[tool(
+        description = "List who reacted to a message and with what, newest first. Private chats and groups only: channels show just the counts in each message's `reactions`.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn get_reactions(
+        &self,
+        Parameters(params): Parameters<GetReactionsParams>,
+    ) -> Result<Json<Reactions>, String> {
+        let peer = self.resolve(&params.chat).await?;
+        let tl::enums::messages::MessageReactionsList::List(list) = self
+            .client
+            .invoke(&tl::functions::messages::GetMessageReactionsList {
+                peer: (&peer).into(),
+                id: params.message_id,
+                reaction: params.reaction.as_deref().map(parse_reaction).transpose()?,
+                offset: params.offset,
+                limit: params.limit.unwrap_or(20).min(100) as i32,
+            })
+            .await
+            .map_err(|error| {
+                if error.is("BROADCAST_FORBIDDEN") {
+                    "channels don't show who reacted, only the counts in each message's `reactions`"
+                        .to_owned()
+                } else {
+                    fail(error)
+                }
+            })?;
+        self.cache_peers(&list.chats, &list.users).await?;
+        let peers: Vec<Peer> = list
+            .chats
+            .into_iter()
+            .map(|chat| Peer::from_raw(&self.client, chat))
+            .chain(
+                list.users
+                    .into_iter()
+                    .map(|user| Peer::User(User::from_raw(&self.client, user))),
+            )
+            .collect();
+        let reactions = list
+            .reactions
+            .into_iter()
+            .filter_map(|tl::enums::MessagePeerReaction::Reaction(reaction)| {
+                let id = PeerId::from(reaction.peer_id);
+                Some(PeerReaction {
+                    peer: chat_info(peers.iter().find(|peer| peer.id() == id)?),
+                    reaction: reaction_text(&reaction.reaction),
+                    date: Timestamp::from_second(reaction.date.into())
+                        .expect("i32 seconds are in range")
+                        .to_string(),
+                })
+            })
+            .collect();
+        Ok(Json(Reactions {
+            total: list.count,
+            reactions,
+            next_offset: list.next_offset,
+        }))
     }
 
     #[tool(

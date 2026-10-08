@@ -55,6 +55,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
   - Tools return `Result<Json<T>, String>` (or `Result<String, String>` for plain acknowledgements). `Err(String)` becomes an `isError` result the agent can read; map errors with `.map_err(fail)`. `Json<T>` must wrap an object, never a bare `Vec`.
   - Output fields left out with `skip_serializing_if` must be `Option` or also carry `#[serde(default)]` (e.g. `Vec` fields). Otherwise schemars lists them as `required` in the output schema, and clients that validate (Claude Code does) reject the whole result.
   - Buttons: `message_buttons` decodes inline and reply-keyboard markup once, as (`Button` for output, `ButtonAction` for `click_button`); add new button types there.
+  - Reactions are strings in both directions: an emoji, `custom:<document id>`, or `paid` (`reaction_text` / `parse_reaction`). `send_reaction` refuses `paid`, which spends Telegram Stars.
   - Message text is Markdown in both directions (grammers `markdown` feature: `message.markdown_text()` / `InputMessage::markdown`).
 
 ## Gotchas
@@ -65,7 +66,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - `rmcp`'s `Implementation::from_build_env()` reports `rmcp`'s own crate name. Use `Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))`.
 - grammers marks `Media`, `Role` and similar enums `#[non_exhaustive]`, and new TL variants appear upstream (e.g. `Community`). Matches need a wildcard arm.
 - `get_messages_by_id` returns placeholders (`tl::enums::Message::Empty`) for deleted or missing ids; filter them out.
-- Saved Messages: Telegram reports `out = false` there, so `message_info` also treats "sender is me" as outgoing. `from_me` search returns nothing there, and reactions are Premium-only.
+- Saved Messages: Telegram reports `out = false` there, so `message_info` also treats "sender is me" as outgoing. `from_me` search returns nothing there, and reactions are Premium-only (so `send_reaction` fails there with `PREMIUM_ACCOUNT_REQUIRED` on a free account). `get_reactions` is refused in channels (`BROADCAST_FORBIDDEN`).
 - `delete_dialog` leaves channels/groups but *deletes the history* of private chats; `leave_chat` refuses users for that reason.
 - Inline buttons use the newer layout: `KeyboardInlineButtonRow` → `KeyboardInlineButton { text, type: InlineButtonType }`.
 - `PeerId::self_user()` is a sentinel id; `resolve_peer` can't match it. `me` resolves to the real `PeerRef` captured at startup (`TelegramMcp::me`).
