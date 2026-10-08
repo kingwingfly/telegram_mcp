@@ -21,7 +21,8 @@ built on [`rmcp`](https://crates.io/crates/rmcp) and [`grammers`](https://codebe
    ```
 
    The session is stored at `<data dir>/telegram-mcp/telegram.session`
-   (`~/.local/share/...` on Linux), with owner-only permissions. Override it with
+   (`~/.local/share/...` on Linux) and created with owner-only permissions; later runs keep
+   whatever permissions or ACLs you give it. Override it with
    `--session <PATH>` or `TELEGRAM_MCP_SESSION`. Treat this file like a password: it
    grants full access to the account.
 

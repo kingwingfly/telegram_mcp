@@ -33,11 +33,15 @@ impl Telegram {
             .create(dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;
 
+        let created = !path.exists();
         let session = SqliteSession::open(path)
             .await
             .with_context(|| format!("failed to open session file {}", path.display()))?;
+        // Only on creation: an existing file's permissions are the owner's choice. Another
+        // account may share it on purpose (e.g. through an ACL); it can't chmod a file it
+        // doesn't own, and a chmod by the owner would reset the ACL mask and cut it off.
         #[cfg(unix)]
-        {
+        if created {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))
                 .with_context(|| format!("failed to set permissions on {}", path.display()))?;
