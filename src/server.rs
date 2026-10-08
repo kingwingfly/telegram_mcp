@@ -69,7 +69,11 @@ impl ServerHandler for TelegramMcp {
             "Read-only: tools that act as this user are disabled.".to_owned()
         } else {
             format!(
-                "Enabled, and done as this user: {}. Anything else acting as this user is disabled.",
+                "Enabled, and done as this user: {}. Anything else acting as this user is disabled. \
+                 The user confirms these calls from their arguments alone, so they also take what a \
+                 person can read: with a numeric id, the name list_chats or get_chat show \
+                 (`chat_name`, `user_name`, …), and with each message id the start of its text. \
+                 Calls whose names or texts don't match do nothing.",
                 enabled.join("; ")
             )
         };
