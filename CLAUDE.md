@@ -65,7 +65,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - grammers marks `Media`, `Role` and similar enums `#[non_exhaustive]`, and new TL variants appear upstream (e.g. `Community`). Matches need a wildcard arm.
 - `get_messages_by_id` returns placeholders (`tl::enums::Message::Empty`) for deleted or missing ids; filter them out.
 - Saved Messages: Telegram reports `out = false` there, so `message_info` also treats "sender is me" as outgoing. `from_me` search returns nothing there, and reactions are Premium-only.
-- grammers' SQLite `cache_peers` (git e7730ae) stores only the first new peer of each batch, which grammers itself calls for every response. `telegram::Session` wraps `SqliteSession` and falls back to the trait's one-by-one default; keep using it until upstream fixes that.
+- grammers' SQLite `cache_peers` (git e7730ae) writes only the first peer of each batch and silently skips the rest (new peers are never stored; cached ones never get missing fields, such as an access hash, filled in), because it reuses a prepared statement without a reset. grammers itself calls it for every response. `telegram::Session` wraps `SqliteSession` and falls back to the trait's one-by-one default; keep using it until upstream fixes that.
 - `delete_dialog` leaves channels/groups but *deletes the history* of private chats; `leave_chat` refuses users for that reason.
 - Inline buttons use the newer layout: `KeyboardInlineButtonRow` → `KeyboardInlineButton { text, type: InlineButtonType }`.
 - `PeerId::self_user()` is a sentinel id; `resolve_peer` can't match it. `me` resolves to the real `PeerRef` captured at startup (`TelegramMcp::me`).

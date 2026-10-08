@@ -77,8 +77,10 @@ pub fn describe(user: &User) -> String {
 }
 
 /// `SqliteSession` with the trait's one-by-one `cache_peers`. The SQLite batch version
-/// (grammers git e7730ae) only stores the first new peer of each batch, so access hashes of
-/// most chats in a response were lost and their ids failed in later requests.
+/// (grammers git e7730ae) reuses its statement without a reset, so it writes only the first peer
+/// of each batch and silently skips the rest: new peers are never stored, and cached ones never
+/// get missing fields (such as an access hash) filled in. Access hashes of most chats in a
+/// response were lost, and their ids failed in later requests.
 pub struct Session(SqliteSession);
 
 impl grammers_session::Session for Session {
