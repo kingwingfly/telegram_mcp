@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-A stdio MCP server that exposes Telegram to agents **as the user's own account** (not a bot), built on `rmcp` (server) and `grammers` (MTProto client). The user logs in once with the CLI; the MCP server reuses that session.
+An MCP server (stdio, or Streamable HTTP with `serve --listen`) that exposes Telegram to agents **as the user's own account** (not a bot), built on `rmcp` (server) and `grammers` (MTProto client). The user logs in once with the CLI; the MCP server reuses that session.
 
 ## Coding rules
 
@@ -25,6 +25,7 @@ cargo run -- logout               # sign out + delete session file
 cargo run                         # = `serve`: MCP over stdio, read-only tools
 cargo run -- serve --access contacts       # also join/leave chats, add/delete contacts
 cargo run -- serve --access contacts,send  # groups are independent; combine them
+cargo run -- serve --listen 127.0.0.1:8000 # MCP over HTTP at /mcp instead of stdio, until Ctrl-C
 ```
 
 `serve` also takes `--download-dir <PATH>` (where `download_media` saves; default `<downloads dir>/telegram-mcp`). Global flags: `--env-file <PATH>` (otherwise `.env` is searched upward from the cwd) and `--session <PATH>` (or `TELEGRAM_MCP_SESSION`; default `<data dir>/telegram-mcp/telegram.session`).
@@ -38,6 +39,14 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
   | cargo run -q -- serve
 ```
 
+With `--listen`, each message is its own POST (no handshake needed, the server is stateless):
+
+```sh
+curl -s http://127.0.0.1:8000/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_chat","arguments":{"chat":"me"}}}'
+```
+
 Test write tools only in Saved Messages (`"chat": "me"`), and delete what you create.
 
 ## Architecture
@@ -45,7 +54,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 - `main.rs`: clap CLI; dispatches to `auth` (login/status/logout) or `server` (serve, the default).
 - `config.rs`: loads `.env`, reads `TELEGRAM_API_ID` (always needed) and `TELEGRAM_API_HASH` (only needed by `login`, to request a code). The hash is wrapped in `ApiHash`, whose `Debug` is redacted. Never print or log it.
 - `telegram.rs`: `Telegram::connect` opens the SQLite session (made owner-only when it creates the file; an existing file's permissions and ACLs are left alone, so another OS user can share it), builds a grammers `SenderPool`, spawns its runner task, and returns the `Client`. Always call `Telegram::shutdown()` on every path, including errors, so the runner stops cleanly. The pattern used is `let result = ...; tg.shutdown().await; result`. The pool's update receiver is dropped because updates are not consumed yet.
-- `server.rs`: `TelegramMcp` (the `ServerHandler`), `serve`, and what the tool modules share: `parse_link` (every chat/link format → `ChatRef` + optional message id), `resolve` / `resolve_chat`, output types (`ChatInfo`, `MessageInfo`, `Messages`), shared params, and the `chat_info` / `message_info` / `fail` helpers. `serve` refuses to start unless the session is authorized.
+- `server.rs`: `TelegramMcp` (the `ServerHandler`), `serve`, and what the tool modules share: `parse_link` (every chat/link format → `ChatRef` + optional message id), `resolve` / `resolve_chat`, output types (`ChatInfo`, `MessageInfo`, `Messages`), shared params, and the `chat_info` / `message_info` / `fail` helpers. `serve` refuses to start unless the session is authorized. With `--listen` it serves rmcp's `StreamableHttpService` through axum at `/mcp`, stateless: every request is handled by a fresh clone of `TelegramMcp`, so state that must outlive a request sits behind an `Arc` (like `usernames`). There is no authentication.
 - `server/read.rs`: `read_tools` router (always registered) plus `chat_details`, shared by `get_chat` and `open_link` (full info, profile/linked chat, pinned messages).
 - Raw API calls (`client.invoke`): grammers can't build `Message`/`Peer` maps from them (`PeerMap` has no public constructor). Call `self.cache_peers(&chats, &users)` on every raw response so the ids tools report stay usable; to get full messages, take the ids and refetch with `get_messages_by_id` (as `get_replies` does with `messages.getReplies`).
 - `server/write.rs`: `contacts_tools` (join/leave chats, add/delete contacts) and `send_tools`, registered independently by `serve --access contacts,send` (`server::Access`). Each router is a `#[tool_router(router = …, vis = "pub(super)")]` impl. A new tool goes in the router matching what it changes on Telegram, and gets `annotations(...)` hints like its neighbours.
@@ -60,7 +69,8 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 
 ## Gotchas
 
-- **stdout is the MCP protocol channel.** All logging goes to stderr via `tracing` (`RUST_LOG` controls it; grammers' `log` output is bridged). Never `println!` from the serve path.
+- **HTTP requests are refused (`403`) unless their `Host` is allowed.** rmcp's `allowed_hosts` defaults to the loopback names, which blocks DNS rebinding from web pages; `serve` adds the `--listen` IP when it isn't loopback. Don't disable the check: nothing else stands between a browser and the account.
+- **stdout is the MCP protocol channel** (over stdio). All logging goes to stderr via `tracing` (`RUST_LOG` controls it; grammers' `log` output is bridged). Never `println!` from the serve path.
 - **grammers is a git dependency**, pinned by `Cargo.lock`: the `fix-sqlite-cache-peers` branch of the `kingwingfly/grammers` fork on codeberg, whose only change is a fix for SQLite `cache_peers` storing just the first peer of each batch (upstream issue #77). Switch back to `Lonami/grammers` once upstream fixes it. Use the source in `~/.cargo/git/checkouts/` as the API reference, not docs.rs or crates.io 0.10.0, which differ. `grammers-session` is a direct dependency only to enable its `sqlite-storage` feature (grammers-client disables it).
 - **The session directory must be writable**, not just the file: SQLite creates a journal next to it on every write, and grammers writes on every connect. When it can't, grammers reports only a bare `session error` (the inner cause is hidden).
 - `rmcp`'s `Implementation::from_build_env()` reports `rmcp`'s own crate name. Use `Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))`.

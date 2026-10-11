@@ -3,6 +3,7 @@ mod config;
 mod server;
 mod telegram;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -35,8 +36,12 @@ enum Command {
     Status,
     /// Sign out and delete the session file.
     Logout,
-    /// Run the MCP server over stdio (the default).
+    /// Run the MCP server (the default): over stdio, or over HTTP with `--listen`.
     Serve {
+        /// Serve MCP over HTTP at `http://<ADDR>/mcp` instead of stdio, e.g. `127.0.0.1:8000`.
+        /// There is no authentication: whoever can reach the address can use the account.
+        #[arg(long, value_name = "ADDR")]
+        listen: Option<SocketAddr>,
         /// Tool groups acting as you, on top of the read tools; comma-separated or repeated,
         /// e.g. `--access contacts,send` [default: read only]
         #[arg(long, value_enum, value_delimiter = ',', value_name = "GROUPS")]
@@ -63,6 +68,7 @@ async fn main() -> Result<()> {
     let config = Config::load(cli.env_file.as_deref(), cli.session)?;
 
     let command = cli.command.unwrap_or(Command::Serve {
+        listen: None,
         access: Vec::new(),
         download_dir: None,
     });
@@ -71,6 +77,7 @@ async fn main() -> Result<()> {
         Command::Status => auth::status(&config).await,
         Command::Logout => auth::logout(&config).await,
         Command::Serve {
+            listen,
             access,
             download_dir,
         } => {
@@ -83,7 +90,7 @@ async fn main() -> Result<()> {
             };
             // Paths are reported to the agent, so make them absolute.
             let download_dir = std::path::absolute(download_dir)?;
-            server::serve(&config, access, download_dir).await
+            server::serve(&config, listen, access, download_dir).await
         }
     }
 }

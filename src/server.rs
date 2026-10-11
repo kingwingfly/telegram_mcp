@@ -3,10 +3,11 @@ mod write;
 
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use grammers_client::media::Media;
 use grammers_client::message::Message;
 use grammers_client::peer::Peer;
@@ -17,6 +18,8 @@ use grammers_session::types::{PeerId, PeerInfo, PeerKind, PeerRef};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::transport::stdio;
+use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ServerHandler, ServiceExt, tool_handler};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -266,8 +269,14 @@ fn parse_link(input: &str) -> Result<Link, String> {
     Ok(Link { chat, message_id })
 }
 
-/// Runs the MCP server over stdio. Requires a session created by `telegram-mcp login`.
-pub async fn serve(config: &Config, mut access: Vec<Access>, download_dir: PathBuf) -> Result<()> {
+/// Runs the MCP server over stdio, or over Streamable HTTP at `http://<listen>/mcp`. Requires
+/// a session created by `telegram-mcp login`.
+pub async fn serve(
+    config: &Config,
+    listen: Option<SocketAddr>,
+    mut access: Vec<Access>,
+    download_dir: PathBuf,
+) -> Result<()> {
     access.sort();
     access.dedup();
     let path = &config.session_path;
@@ -277,6 +286,15 @@ pub async fn serve(config: &Config, mut access: Vec<Access>, download_dir: PathB
             path.display()
         );
     }
+    // Bound before connecting, so a taken port fails without opening the session.
+    let listener = match listen {
+        Some(addr) => Some(
+            tokio::net::TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("cannot listen on {addr}"))?,
+        ),
+        None => None,
+    };
 
     let tg = Telegram::connect(config).await?;
     let result = async {
@@ -289,7 +307,7 @@ pub async fn serve(config: &Config, mut access: Vec<Access>, download_dir: PathB
             .await
             .map_err(|e| anyhow!(e))?
             .unwrap_or(PeerId::self_user().to_ambient_ref());
-        tracing::info!("serving MCP over stdio as {account} (access: {access:?})");
+        tracing::info!("serving MCP as {account} (access: {access:?})");
 
         let mut tool_router = TelegramMcp::read_tools();
         if access.contains(&Access::Contacts) {
@@ -308,7 +326,42 @@ pub async fn serve(config: &Config, mut access: Vec<Access>, download_dir: PathB
             download_dir,
             tool_router,
         };
-        server.serve(stdio()).await?.waiting().await?;
+        match listener {
+            None => {
+                server.serve(stdio()).await?.waiting().await?;
+            }
+            Some(listener) => {
+                let addr = listener.local_addr()?;
+                // Stateless: tools only answer requests, so no client needs a session, and
+                // clients survive a server restart.
+                let mut http = StreamableHttpServerConfig::default()
+                    .with_legacy_session_mode(false)
+                    .with_json_response(true);
+                // rmcp only answers requests whose `Host` is in `allowed_hosts` (loopback names
+                // by default), so a web page can't reach the server through DNS rebinding.
+                if !addr.ip().is_loopback() {
+                    tracing::warn!(
+                        "{addr} is not a loopback address, and there is no authentication: \
+                         anyone who can reach it can use this account"
+                    );
+                    http.allowed_hosts.push(addr.ip().to_string());
+                }
+                let stop = http.cancellation_token.clone();
+                let service = StreamableHttpService::new(
+                    move || Ok(server.clone()),
+                    Arc::new(NeverSessionManager::default()),
+                    http,
+                );
+                tracing::info!("listening on http://{addr}/mcp");
+                axum::serve(listener, axum::Router::new().route_service("/mcp", service))
+                    .with_graceful_shutdown(async move {
+                        let _ = tokio::signal::ctrl_c().await;
+                        // Fails the requests still running instead of waiting for them.
+                        stop.cancel();
+                    })
+                    .await?;
+            }
+        }
         anyhow::Ok(())
     }
     .await;

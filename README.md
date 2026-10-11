@@ -1,6 +1,6 @@
 # telegram-mcp
 
-An MCP server (stdio) that gives agents access to Telegram **as your user account**,
+An MCP server (stdio or HTTP) that gives agents access to Telegram **as your user account**,
 built on [`rmcp`](https://crates.io/crates/rmcp) and [`grammers`](https://codeberg.org/Lonami/grammers).
 
 ## Setup
@@ -49,6 +49,33 @@ where `download_media` saves files (default `<downloads dir>/telegram-mcp`).
 
 Only `TELEGRAM_API_ID` is needed to serve; `TELEGRAM_API_HASH` is only used by `login`.
 Logs go to stderr (`RUST_LOG` controls verbosity), since stdout carries the protocol.
+
+### Over HTTP
+
+`serve --listen <ADDR>` serves MCP over Streamable HTTP at `http://<ADDR>/mcp` instead of
+stdio, until Ctrl-C. One running server can then be shared by several clients, including
+ones that can't read the session file:
+
+```sh
+telegram-mcp --env-file /path/to/telegram_mcp/.env serve --listen 127.0.0.1:8000
+```
+
+```json
+{
+  "mcpServers": {
+    "telegram": { "type": "http", "url": "http://127.0.0.1:8000/mcp" }
+  }
+}
+```
+
+- **There is no authentication.** Whoever can connect to the address can use the account
+  with the `--access` the server was started with, so keep it on a loopback address and
+  reach it from other machines through something that authenticates (e.g. an SSH tunnel).
+- Clients must address the server by a loopback name (`localhost`, `127.0.0.1`, `::1`) or by
+  the IP in `--listen`; requests with any other `Host` get `403`. This stops web pages from
+  reaching it through DNS rebinding. To accept connections on a network address, listen on
+  that IP rather than `0.0.0.0`.
+- `download_media` saves files, and `send_file` reads them, on the machine running the server.
 
 ## Tools
 

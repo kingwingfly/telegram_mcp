@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 clap = { version = "4.6.7", features = ["derive"] }
 dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
 dirs = "7.0.0"
@@ -14,9 +15,9 @@ dotenvy = "0.15.7"
 grammers-client = { git = "https://codeberg.org/kingwingfly/grammers.git", branch = "fix-sqlite-cache-peers", features = ["markdown", "parse_invite_link"] }
 grammers-session = { git = "https://codeberg.org/kingwingfly/grammers.git", branch = "fix-sqlite-cache-peers" }
 jiff = "0.2"
-rmcp = { version = "3.5.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "3.5.0", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
 schemars = "1"
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "fs", "time"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "fs", "time", "net", "signal"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
