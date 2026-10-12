@@ -6,7 +6,7 @@ use grammers_client::peer::{Peer, User};
 use grammers_client::tl;
 use grammers_session::types::{PeerKind, PeerRef};
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::{tool, tool_router};
+use rmcp::{serde_json, tool, tool_router};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -17,49 +17,57 @@ use super::{
 
 #[derive(Deserialize, JsonSchema)]
 struct NamedChatParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct SendMessageParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     /// Markdown: **bold**, _italic_, `code`, ```pre```, [link](https://…).
     text: String,
-    /// Send as a reply to this message id.
+    /// Send as a reply to this message id. Put `reply_to_text` in the same call.
     reply_to: Option<i32>,
-    /// Required with `reply_to`: the start of that message's `text` as get_messages shows it,
-    /// at least 20 characters or all of it (its `media` if it has no text).
+    /// Always pass it with `reply_to`: the start of that message's `text` as get_messages
+    /// shows it, at least 20 characters or all of it (its `media` if it has no text).
     reply_to_text: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct SendFileParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     /// Path of the local file to upload. .jpg/.png/.webp are sent as photos, anything else as a file.
     path: String,
     /// Markdown caption.
     caption: Option<String>,
-    /// Send as a reply to this message id.
+    /// Send as a reply to this message id. Put `reply_to_text` in the same call.
     reply_to: Option<i32>,
-    /// Required with `reply_to`: the start of that message's `text` as get_messages shows it,
-    /// at least 20 characters or all of it (its `media` if it has no text).
+    /// Always pass it with `reply_to`: the start of that message's `text` as get_messages
+    /// shows it, at least 20 characters or all of it (its `media` if it has no text).
     reply_to_text: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct EditMessageParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     message_id: i32,
     /// The start of that message's `text` as get_messages shows it, at least 20 characters or
@@ -79,31 +87,39 @@ struct MessageRef {
 
 #[derive(Deserialize, JsonSchema)]
 struct MessagesParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     messages: Vec<MessageRef>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct ForwardMessagesParams {
-    /// Chat the messages are in.
+    /// Chat the messages are in: `me`, `@username`, a t.me link, or a numeric id from
+    /// list_chats. A numeric id is never enough alone: put `from_chat_name` in the same call.
     from_chat: String,
-    /// Its name as list_chats or get_chat show it. Required when `from_chat` is a numeric id.
+    /// That chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `from_chat` is a numeric id: the call is refused without it.
     from_chat_name: Option<String>,
     messages: Vec<MessageRef>,
-    /// Chat to forward them to.
+    /// Chat to forward them to, given like `from_chat`. A numeric id is never enough alone:
+    /// put `to_chat_name` in the same call.
     to_chat: String,
-    /// Its name as list_chats or get_chat show it. Required when `to_chat` is a numeric id.
+    /// That chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `to_chat` is a numeric id: the call is refused without it.
     to_chat_name: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct SendReactionParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     message_id: i32,
     /// The start of that message's `text` as get_messages shows it, at least 20 characters or
@@ -117,9 +133,11 @@ struct SendReactionParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct NamedMessageParams {
-    /// `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// The chat: `me`, `@username`, a t.me link, or a numeric id from list_chats.
+    /// A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     message_id: i32,
     /// The start of that message's `text` as get_messages shows it, at least 20 characters or
@@ -129,9 +147,11 @@ struct NamedMessageParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct ClickButtonParams {
-    /// `me`, `@username`, a t.me link, or a numeric id of the chat with the message.
+    /// The chat with the message: `me`, `@username`, a t.me link, or a numeric id from
+    /// list_chats. A numeric id is never enough alone: put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as list_chats or get_chat show it. Required when `chat` is a numeric id.
+    /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
+    /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
     message_id: i32,
     /// The start of that message's `text` as get_messages shows it, at least 20 characters or
@@ -162,9 +182,11 @@ struct ClickResult {
 
 #[derive(Deserialize, JsonSchema)]
 struct AddContactParams {
-    /// The user to add: `@username`, a t.me link, or a numeric id. Omit when adding by `phone`.
+    /// The person to add: `@username`, a t.me link, or a numeric id. Omit when adding by
+    /// `phone`. A numeric id is never enough alone: put `user_name` in the same call.
     user: Option<String>,
-    /// The user's name as list_chats or get_chat show it. Required when `user` is a numeric id.
+    /// That person's `name`, copied exactly from list_chats, list_contacts or get_chat. Always
+    /// pass it when `user` is a numeric id: the call is refused without it.
     user_name: Option<String>,
     /// Phone number in international format, to add someone by phone instead of `user`.
     phone: Option<String>,
@@ -175,19 +197,40 @@ struct AddContactParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct UserParams {
-    /// `@username`, a t.me link, or a numeric id of a user.
+    /// The person: `@username`, a t.me link, or a numeric id. A numeric id is never enough
+    /// alone: put `user_name` in the same call.
     user: String,
-    /// The user's name as list_chats or get_chat show it. Required when `user` is a numeric id.
+    /// That person's `name`, copied exactly from list_chats, list_contacts or get_chat. Always
+    /// pass it when `user` is a numeric id: the call is refused without it.
     user_name: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct JoinChatParams {
-    /// `@username` or t.me link of a public group/channel, or an invite link (t.me/+… or t.me/joinchat/…).
+    /// `@username` or t.me link of a public group/channel, or an invite link (t.me/+… or
+    /// t.me/joinchat/…). An invite link is never enough alone, and neither is a numeric id:
+    /// put `chat_name` in the same call.
     chat: String,
-    /// The chat's name as get_chat shows it, or for an invite link the `title` open_link shows.
-    /// Required for invite links and numeric ids.
+    /// The chat's `name`, copied exactly from get_chat, or for an invite link the `title`
+    /// open_link shows. Always pass it with an invite link or a numeric id: the call is
+    /// refused without it.
     chat_name: Option<String>,
+}
+
+/// The refusal of a call whose name for a chat or user is missing, or is not `actual`, the
+/// name it really has. It gives that name and spells out the whole next call: told only
+/// which argument is missing, a weaker model sends that argument and nothing else.
+fn unnamed(what: &str, actual: &str, given: Option<&str>, name_field: &str) -> String {
+    let actual = serde_json::Value::from(actual);
+    let found = match given {
+        Some(given) => format!("not {}", serde_json::Value::from(given)),
+        None => "and it has to come with that name".to_owned(),
+    };
+    format!(
+        "Nothing was done: {what} is {actual}, {found}. If {actual} is the one you mean, make \
+         the same call again with every argument it had, and with \"{name_field}\": {actual}. \
+         A call with only `{name_field}` in it fails."
+    )
 }
 
 impl TelegramMcp {
@@ -201,31 +244,30 @@ impl TelegramMcp {
     ) -> Result<PeerRef, String> {
         let link = parse_link(chat)?;
         let peer = self.resolve_chat(&link.chat).await?;
-        match name {
-            Some(name) => {
-                let actual = chat_info(&self.client.resolve_peer(peer).await.map_err(fail)?).name;
-                if actual != name {
-                    return Err(format!(
-                        "{chat} is named {actual:?}, not {name:?}; nothing was done"
-                    ));
-                }
-            }
-            None if matches!(link.chat, ChatRef::Peer(_)) => {
-                return Err(format!(
-                    "{chat} is a numeric id: also pass `{name_field}`, its name as list_chats or get_chat show it, so the user can tell what it is"
-                ));
-            }
-            None => {}
+        let numeric = matches!(link.chat, ChatRef::Peer(_));
+        if name.is_none() && !numeric {
+            return Ok(peer);
         }
-        Ok(peer)
+        let actual = chat_info(&self.client.resolve_peer(peer).await.map_err(fail)?).name;
+        if name == Some(actual.as_str()) {
+            return Ok(peer);
+        }
+        let what = if numeric {
+            format!("the numeric id {chat}")
+        } else {
+            chat.to_owned()
+        };
+        Err(unnamed(&what, &actual, name, name_field))
     }
 
     /// Fetches the messages and checks each against the text passed for it, so the user
-    /// confirming the call sees what the messages say, not just their ids.
+    /// confirming the call sees what the messages say, not just their ids. `text_field` is
+    /// how the argument holding that text is called in the tool, for the refusal.
     async fn check_messages(
         &self,
         peer: PeerRef,
         messages: &[(i32, &str)],
+        text_field: &str,
     ) -> Result<Vec<Message>, String> {
         let ids: Vec<i32> = messages.iter().map(|&(id, _)| id).collect();
         let found = self
@@ -246,9 +288,12 @@ impl TelegramMcp {
             };
             let needed = actual.chars().count().min(20);
             if !actual.starts_with(text) || text.chars().count() < needed {
-                let start: String = actual.chars().take(40).collect();
+                let start = serde_json::Value::from(actual.chars().take(40).collect::<String>());
                 return Err(format!(
-                    "message {id} starts {start:?}; pass at least its first {needed} characters as its text. Nothing was done"
+                    "Nothing was done: message {id} starts {start}, and {text_field} has to be at \
+                     least the first {needed} characters of that, copied exactly. Make the same \
+                     call again with every argument it had, and with that one put right. A call \
+                     with only that argument in it fails."
                 ));
             }
             checked.push(message);
@@ -261,7 +306,7 @@ impl TelegramMcp {
 #[tool_router(router = send_tools, vis = "pub(super)")]
 impl TelegramMcp {
     #[tool(
-        description = "Send a text message as the user.",
+        description = "Send a text message as the user. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"text\": \"On my way\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -276,11 +321,10 @@ impl TelegramMcp {
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         if let Some(id) = params.reply_to {
-            let text = params
-                .reply_to_text
-                .as_deref()
-                .ok_or("`reply_to_text` is required with `reply_to`")?;
-            self.check_messages(peer, &[(id, text)]).await?;
+            // Left out, the text is refused like a wrong one, which says what it has to be.
+            let text = params.reply_to_text.as_deref().unwrap_or_default();
+            self.check_messages(peer, &[(id, text)], "`reply_to_text`")
+                .await?;
         }
         let message = InputMessage::new()
             .markdown(&params.text)
@@ -294,7 +338,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Upload a local file and send it to a chat as the user, with an optional caption.",
+        description = "Upload a local file and send it to a chat as the user, with an optional caption. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"path\": \"/tmp/menu.pdf\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -309,11 +353,10 @@ impl TelegramMcp {
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         if let Some(id) = params.reply_to {
-            let text = params
-                .reply_to_text
-                .as_deref()
-                .ok_or("`reply_to_text` is required with `reply_to`")?;
-            self.check_messages(peer, &[(id, text)]).await?;
+            // Left out, the text is refused like a wrong one, which says what it has to be.
+            let text = params.reply_to_text.as_deref().unwrap_or_default();
+            self.check_messages(peer, &[(id, text)], "`reply_to_text`")
+                .await?;
         }
         let uploaded = self
             .client
@@ -341,7 +384,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Edit the text of one of the user's own messages.",
+        description = "Edit the text of one of the user's own messages. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"message_id\": 45, \"message_text\": \"On my way, there in ten\", \"text\": \"There in five\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -355,8 +398,12 @@ impl TelegramMcp {
         let peer = self
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
-        self.check_messages(peer, &[(params.message_id, &params.message_text)])
-            .await?;
+        self.check_messages(
+            peer,
+            &[(params.message_id, &params.message_text)],
+            "`message_text`",
+        )
+        .await?;
         self.client
             .edit_message(
                 peer,
@@ -369,7 +416,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Delete messages for everyone where possible. Irreversible.",
+        description = "Delete messages for everyone where possible. Irreversible. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"messages\": [{\"id\": 45, \"text\": \"On my way, there in ten\"}]}",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -388,7 +435,8 @@ impl TelegramMcp {
             .iter()
             .map(|message| (message.id, message.text.as_str()))
             .collect();
-        self.check_messages(peer, &messages).await?;
+        self.check_messages(peer, &messages, "the `text` beside its `id` in `messages`")
+            .await?;
         let ids: Vec<i32> = messages.iter().map(|&(id, _)| id).collect();
         let deleted = self
             .client
@@ -399,7 +447,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Forward messages from one chat to another as the user.",
+        description = "Forward messages from one chat to another as the user. Each chat given as a numeric id needs its name in the same call: `from_chat_name` with `from_chat`, `to_chat_name` with `to_chat`. Example: {\"from_chat\": \"-1001234567890\", \"from_chat_name\": \"Family\", \"messages\": [{\"id\": 45, \"text\": \"On my way, there in ten\"}], \"to_chat\": \"123456789\", \"to_chat_name\": \"Bea Miller\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -429,7 +477,12 @@ impl TelegramMcp {
             .iter()
             .map(|message| (message.id, message.text.as_str()))
             .collect();
-        self.check_messages(source, &messages).await?;
+        self.check_messages(
+            source,
+            &messages,
+            "the `text` beside its `id` in `messages`",
+        )
+        .await?;
         let ids: Vec<i32> = messages.iter().map(|&(id, _)| id).collect();
         let forwarded = self
             .client
@@ -446,7 +499,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Set the user's reactions to a message, replacing their previous ones; an empty list removes them.",
+        description = "Set the user's reactions to a message, replacing their previous ones; an empty list removes them. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"message_id\": 45, \"message_text\": \"On my way, there in ten\", \"reactions\": [\"👍\"]}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -471,8 +524,12 @@ impl TelegramMcp {
         let peer = self
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
-        self.check_messages(peer, &[(params.message_id, &params.message_text)])
-            .await?;
+        self.check_messages(
+            peer,
+            &[(params.message_id, &params.message_text)],
+            "`message_text`",
+        )
+        .await?;
         self.client
             .send_reactions(peer, params.message_id, reactions)
             .await
@@ -489,7 +546,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Pin a message in a chat.",
+        description = "Pin a message in a chat. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"message_id\": 45, \"message_text\": \"On my way, there in ten\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -503,8 +560,12 @@ impl TelegramMcp {
         let peer = self
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
-        self.check_messages(peer, &[(params.message_id, &params.message_text)])
-            .await?;
+        self.check_messages(
+            peer,
+            &[(params.message_id, &params.message_text)],
+            "`message_text`",
+        )
+        .await?;
         self.client
             .pin_message(peer, params.message_id)
             .await
@@ -513,7 +574,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Unpin a message in a chat.",
+        description = "Unpin a message in a chat. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"message_id\": 45, \"message_text\": \"On my way, there in ten\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -527,8 +588,12 @@ impl TelegramMcp {
         let peer = self
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
-        self.check_messages(peer, &[(params.message_id, &params.message_text)])
-            .await?;
+        self.check_messages(
+            peer,
+            &[(params.message_id, &params.message_text)],
+            "`message_text`",
+        )
+        .await?;
         self.client
             .unpin_message(peer, params.message_id)
             .await
@@ -537,7 +602,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Click a button under a message as the user, e.g. a bot's next page or filter: returns the bot's answer, the message after the click, and messages the click produced. Link and copy buttons are only reported, not opened.",
+        description = "Click a button under a message as the user, e.g. a bot's next page or filter: returns the bot's answer, the message after the click, and messages the click produced. Link and copy buttons are only reported, not opened. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"123456789\", \"chat_name\": \"Shop Bot\", \"message_id\": 45, \"message_text\": \"Choose a category\", \"text\": \"Next page\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -553,7 +618,11 @@ impl TelegramMcp {
             .await?;
         let not_empty = |message: &&Message| !matches!(message.raw, tl::enums::Message::Empty(_));
         let message = self
-            .check_messages(peer, &[(params.message_id, &params.message_text)])
+            .check_messages(
+                peer,
+                &[(params.message_id, &params.message_text)],
+                "`message_text`",
+            )
             .await?
             .remove(0);
 
@@ -684,7 +753,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Mark all messages in a chat as read.",
+        description = "Mark all messages in a chat as read. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -708,7 +777,7 @@ impl TelegramMcp {
 #[tool_router(router = contacts_tools, vis = "pub(super)")]
 impl TelegramMcp {
     #[tool(
-        description = "Join a group or channel as the user: @username, t.me link, or invite link. Public chats can be read without joining.",
+        description = "Join a group or channel as the user: @username, t.me link, or invite link. Public chats can be read without joining. An invite link or a numeric id must come with `chat_name` in the same call; for an invite link that is the `title` open_link shows. Example: {\"chat\": \"https://t.me/+AbCdEfGhIjKlMnOp\", \"chat_name\": \"Book Club\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -721,9 +790,6 @@ impl TelegramMcp {
     ) -> Result<String, String> {
         let joined = match parse_link(&params.chat)?.chat {
             ChatRef::Invite(hash) => {
-                let name = params.chat_name.as_deref().ok_or(
-                    "an invite link shows no name: also pass `chat_name`, the `title` open_link shows for it",
-                )?;
                 let invite = self
                     .client
                     .invoke(&tl::functions::messages::CheckChatInvite { hash })
@@ -736,11 +802,10 @@ impl TelegramMcp {
                     }
                     tl::enums::ChatInvite::Invite(invite) => invite.title,
                 };
-                if title != name {
-                    return Err(format!(
-                        "{} is for {title:?}, not {name:?}; nothing was done",
-                        params.chat
-                    ));
+                let name = params.chat_name.as_deref();
+                if name != Some(title.as_str()) {
+                    let what = format!("the invite link {}", params.chat);
+                    return Err(unnamed(&what, &title, name, "chat_name"));
                 }
                 self.client.accept_invite_link(&params.chat).await
             }
@@ -761,7 +826,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Leave a group or channel as the user.",
+        description = "Leave a group or channel as the user. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -787,7 +852,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Add someone to the user's Telegram contacts, by @username/id/link or by phone number. The user's own phone number is not shared.",
+        description = "Add someone to the user's Telegram contacts, by @username/id/link or by phone number. The user's own phone number is not shared. If `user` is a numeric id, `user_name` must be in the same call. Example: {\"user\": \"123456789\", \"user_name\": \"Bea Miller\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -864,7 +929,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Remove someone from the user's Telegram contacts.",
+        description = "Remove someone from the user's Telegram contacts. If `user` is a numeric id, `user_name` must be in the same call. Example: {\"user\": \"123456789\", \"user_name\": \"Bea Miller\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

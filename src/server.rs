@@ -71,12 +71,22 @@ impl ServerHandler for TelegramMcp {
         let mode = if enabled.is_empty() {
             "Read-only: tools that act as this user are disabled.".to_owned()
         } else {
+            // A call of a tool that is enabled, so the example can be followed as it stands.
+            let example = if self.access.contains(&Access::Send) {
+                r#"send_message takes {"chat": "-1001234567890", "chat_name": "Family", "text": "On my way"}"#
+            } else {
+                r#"leave_chat takes {"chat": "-1001234567890", "chat_name": "Family"}"#
+            };
             format!(
                 "Enabled, and done as this user: {}. Anything else acting as this user is disabled. \
-                 The user confirms these calls from their arguments alone, so they also take what a \
-                 person can read: with a numeric id, the name list_chats or get_chat show \
-                 (`chat_name`, `user_name`, …), and with each message id the start of its text. \
-                 Calls whose names or texts don't match do nothing.",
+                 The user approves each of these calls by reading its arguments, so in them an id \
+                 never goes alone. A numeric id goes with the name list_chats or get_chat show for \
+                 it, in the same call: `chat` with `chat_name`, `user` with `user_name`, \
+                 `from_chat` with `from_chat_name`, `to_chat` with `to_chat_name`. A message id \
+                 goes with the start of that message's text. For example, {example}. \
+                 A call without these, or with a name or text that doesn't match, does nothing and \
+                 says what is wrong. Then make the whole call again, with every argument it had \
+                 and the correction; the missing argument alone is not a call.",
                 enabled.join("; ")
             )
         };
