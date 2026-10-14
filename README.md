@@ -46,6 +46,8 @@ Read tools are always on. Add `"--access", "<groups>"` after `"serve"` to enable
 as you, comma-separated: `contacts` (join/leave chats, manage contacts) and/or `send`
 (everything else), e.g. `"--access", "contacts,send"`. `--download-dir <PATH>` sets
 where `download_media` saves files (default `<downloads dir>/telegram-mcp`).
+`--upload-dir <PATH>` is the only folder `send_file` sends files from; without it, there is
+no `send_file`.
 
 Only `TELEGRAM_API_ID` is needed to serve; `TELEGRAM_API_HASH` is only used by `login`.
 Logs go to stderr (`RUST_LOG` controls verbosity), since stdout carries the protocol.
@@ -89,7 +91,7 @@ answer, the message as edited by the bot, and any messages it sent.
 
 | Read (always on) | `--access contacts` | `--access send` |
 |---|---|---|
-| `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file`, `edit_message`, `delete_messages` |
+| `list_chats`, `get_chat`, `list_participants` | `join_chat` | `send_message`, `send_file` (also needs `--upload-dir`), `edit_message`, `delete_messages` |
 | `get_messages`, `get_replies`, `get_reactions`, `search_messages` | `leave_chat` | `forward_messages`, `send_reaction`, `pin_message`, `unpin_message` |
 | `open_link`, `download_media`, `list_contacts` | `add_contact`, `delete_contact` | `mark_as_read`, `click_button` |
 
@@ -101,7 +103,10 @@ so resolved usernames are cached per server run.
 
 Write tools act as you, under your name. Messages from anyone who can reach you end up in
 the agent's context, so only enable them for agents you trust with your account.
-`send_file` can upload any file the server process can read.
+`send_file` uploads only regular files inside `--upload-dir` (symlinks and `..` are resolved
+before the check), and isn't offered at all without that flag. The folder must not hold the
+session file or `.env`: `serve` refuses to start if it does. Give it the same folder as
+`--download-dir` to let the agent re-send what `download_media` saved.
 
 ## Notes
 

@@ -49,6 +49,10 @@ enum Command {
         /// Where download_media saves files [default: <downloads dir>/telegram-mcp]
         #[arg(long, value_name = "PATH")]
         download_dir: Option<PathBuf>,
+        /// The only folder send_file sends from: send_file is offered only with this flag, and
+        /// sends only files inside this folder. It must not hold the session or the .env file.
+        #[arg(long, value_name = "PATH")]
+        upload_dir: Option<PathBuf>,
     },
 }
 
@@ -71,6 +75,7 @@ async fn main() -> Result<()> {
         listen: None,
         access: Vec::new(),
         download_dir: None,
+        upload_dir: None,
     });
     match command {
         Command::Login => auth::login(&config).await,
@@ -80,6 +85,7 @@ async fn main() -> Result<()> {
             listen,
             access,
             download_dir,
+            upload_dir,
         } => {
             let download_dir = match download_dir {
                 Some(dir) => dir,
@@ -90,7 +96,7 @@ async fn main() -> Result<()> {
             };
             // Paths are reported to the agent, so make them absolute.
             let download_dir = std::path::absolute(download_dir)?;
-            server::serve(&config, listen, access, download_dir).await
+            server::serve(&config, listen, access, download_dir, upload_dir).await
         }
     }
 }

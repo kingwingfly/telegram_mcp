@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Duration;
 
 use grammers_client::message::{InputMessage, Message};
@@ -50,7 +49,10 @@ struct SendFileParams {
     /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
     /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
-    /// Path of the local file to upload. .jpg/.png/.webp are sent as photos, anything else as a file.
+    /// Path of the file to upload. Only files in the server's upload folder can be sent: any
+    /// other path is refused, and the refusal names that folder. When download_media saves
+    /// there, the `path` it returned can be passed as it is. .jpg/.png/.webp are sent as
+    /// photos, anything else as a file.
     path: String,
     /// Markdown caption.
     caption: Option<String>,
@@ -338,7 +340,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Upload a local file and send it to a chat as the user, with an optional caption. If `chat` is a numeric id, `chat_name` must be in the same call. Example: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"path\": \"/tmp/menu.pdf\"}",
+        description = "Upload a file from the server's upload folder and send it to a chat as the user, with an optional caption. Only files in that folder can be sent; any other `path` is refused, and the refusal names the folder. If `chat` is a numeric id, `chat_name` must be in the same call. Example, with a `path` as download_media returns it: {\"chat\": \"-1001234567890\", \"chat_name\": \"Family\", \"path\": \"/home/user/Downloads/telegram-mcp/-1001234567890_45_menu.pdf\"}",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -349,6 +351,38 @@ impl TelegramMcp {
         &self,
         Parameters(params): Parameters<SendFileParams>,
     ) -> Result<Json<MessageInfo>, String> {
+        // Checked before anything talks to Telegram, so a refused call costs nothing. The route
+        // is removed without `--upload-dir`; this refusal is in case that ever breaks.
+        let Some(dir) = &self.upload_dir else {
+            return Err("send_file is off: the server was started without --upload-dir".to_owned());
+        };
+        // Symlinks and `..` are resolved first, so the file checked is the file sent.
+        let checked = async {
+            let path = tokio::fs::canonicalize(&params.path).await.ok()?;
+            if !path.starts_with(dir) || !tokio::fs::metadata(&path).await.ok()?.is_file() {
+                return None;
+            }
+            let file = tokio::fs::File::open(&path).await.ok()?;
+            Some((path, file))
+        }
+        .await;
+        let Some((path, mut file)) = checked else {
+            // One refusal for every failure (missing, outside the folder, not a file,
+            // unreadable), so it tells nothing about paths outside the folder.
+            let downloads = tokio::fs::canonicalize(&self.download_dir)
+                .await
+                .unwrap_or_else(|_| self.download_dir.clone());
+            let hint = if downloads.starts_with(dir) {
+                " download_media saves there: pass the `path` it returned as it is."
+            } else {
+                ""
+            };
+            return Err(format!(
+                "Nothing was sent: send_file only sends files in {}.{hint} Make the same call \
+                 again with every argument it had, and with a `path` in that folder.",
+                dir.display()
+            ));
+        };
         let peer = self
             .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
@@ -358,15 +392,17 @@ impl TelegramMcp {
             self.check_messages(peer, &[(id, text)], "`reply_to_text`")
                 .await?;
         }
+        let size = file.metadata().await.map_err(fail)?.len();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
         let uploaded = self
             .client
-            .upload_file(&params.path)
+            .upload_stream(&mut file, size as usize, name.into_owned())
             .await
-            .map_err(|e| format!("cannot read {}: {e}", params.path))?;
+            .map_err(fail)?;
         let message = InputMessage::new()
             .markdown(params.caption.unwrap_or_default())
             .reply_to(params.reply_to);
-        let extension = Path::new(&params.path)
+        let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or_default()

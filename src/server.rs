@@ -42,6 +42,8 @@ pub struct TelegramMcp {
     /// Enabled groups, sorted and deduplicated.
     access: Vec<Access>,
     download_dir: PathBuf,
+    /// Canonical `--upload-dir`, the only folder send_file reads from. `None`: no uploading.
+    upload_dir: Option<PathBuf>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -286,6 +288,7 @@ pub async fn serve(
     listen: Option<SocketAddr>,
     mut access: Vec<Access>,
     download_dir: PathBuf,
+    upload_dir: Option<PathBuf>,
 ) -> Result<()> {
     access.sort();
     access.dedup();
@@ -296,6 +299,30 @@ pub async fn serve(
             path.display()
         );
     }
+    // Canonical, so send_file compares paths against where the folder really is.
+    let upload_dir = match upload_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("cannot create --upload-dir {}", dir.display()))?;
+            let dir = std::fs::canonicalize(&dir)
+                .with_context(|| format!("cannot resolve --upload-dir {}", dir.display()))?;
+            // The SQLite journal sits beside the session, so checking the session covers it.
+            for secret in std::iter::once(path).chain(&config.env_path) {
+                let canonical = std::fs::canonicalize(secret)
+                    .with_context(|| format!("cannot resolve {}", secret.display()))?;
+                if canonical.starts_with(&dir) {
+                    bail!(
+                        "--upload-dir {} contains {}, which send_file could then send; \
+                         pick a folder that holds neither the session nor the .env file",
+                        dir.display(),
+                        secret.display()
+                    );
+                }
+            }
+            Some(dir)
+        }
+        None => None,
+    };
     // Bound before connecting, so a taken port fails without opening the session.
     let listener = match listen {
         Some(addr) => Some(
@@ -325,6 +352,10 @@ pub async fn serve(
         }
         if access.contains(&Access::Send) {
             tool_router += TelegramMcp::send_tools();
+            if upload_dir.is_none() {
+                tool_router.remove_route("send_file");
+                tracing::info!("send_file is off: --upload-dir was not given");
+            }
         }
         let server = TelegramMcp {
             client: tg.client.clone(),
@@ -334,6 +365,7 @@ pub async fn serve(
             account,
             access,
             download_dir,
+            upload_dir,
             tool_router,
         };
         match listener {

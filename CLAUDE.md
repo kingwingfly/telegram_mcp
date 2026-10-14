@@ -28,7 +28,7 @@ cargo run -- serve --access contacts,send  # groups are independent; combine the
 cargo run -- serve --listen 127.0.0.1:8000 # MCP over HTTP at /mcp instead of stdio, until Ctrl-C
 ```
 
-`serve` also takes `--download-dir <PATH>` (where `download_media` saves; default `<downloads dir>/telegram-mcp`). Global flags: `--env-file <PATH>` (otherwise `.env` is searched upward from the cwd) and `--session <PATH>` (or `TELEGRAM_MCP_SESSION`; default `<data dir>/telegram-mcp/telegram.session`).
+`serve` also takes `--download-dir <PATH>` (where `download_media` saves; default `<downloads dir>/telegram-mcp`) and `--upload-dir <PATH>` (the only folder `send_file` sends from; without it `send_file` is not registered). Global flags: `--env-file <PATH>` (otherwise `.env` is searched upward from the cwd) and `--session <PATH>` (or `TELEGRAM_MCP_SESSION`; default `<data dir>/telegram-mcp/telegram.session`).
 
 To smoke-test against the real account, pipe JSON-RPC lines into it (tool calls go after the handshake):
 
@@ -67,6 +67,7 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
   - Buttons: `message_buttons` decodes inline and reply-keyboard markup once, as (`Button` for output, `ButtonAction` for `click_button`); add new button types there.
   - Reactions are strings in both directions: an emoji, `custom:<document id>`, or `paid` (`reaction_text` / `parse_reaction`). `send_reaction` refuses `paid`, which spends Telegram Stars.
   - Message text is Markdown in both directions (grammers `markdown` feature: `message.markdown_text()` / `InputMessage::markdown`).
+  - No tool reads a local path outside `--upload-dir`; the server can read its own session and `.env`. `send_file` is removed from the router without the flag and also refuses itself; with it, it canonicalizes `path`, requires a regular file inside the (canonical) upload dir, and sends the file it opened, before anything talks to Telegram. Every failure gets the same refusal, naming only the folder, so it can't be used to probe paths. `serve` refuses an upload dir that contains the session or the loaded `.env` (`Config::env_path`). A new tool that reads local files follows the same rule.
 
 ## Gotchas
 
