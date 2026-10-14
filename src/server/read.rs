@@ -9,8 +9,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info,
-    fail, message_info, parse_link, parse_reaction, reaction_text,
+    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, SERVICE_CHAT, TelegramMcp,
+    chat_info, fail, message_info, parse_link, parse_reaction, reaction_text,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -254,10 +254,18 @@ impl TelegramMcp {
     ) -> Result<Json<Chats>, String> {
         let offset = params.offset.unwrap_or(0);
         let limit = params.limit.unwrap_or(20).min(100);
-        let mut dialogs = self.client.iter_dialogs().limit(offset + limit);
+        // One more, in case the service chat is among them and left out.
+        let mut dialogs = self.client.iter_dialogs().limit(offset + limit + 1);
         let mut chats = Vec::with_capacity(limit);
         let mut skipped = 0;
-        while let Some(dialog) = dialogs.next().await.map_err(fail)? {
+        while chats.len() < limit
+            && let Some(dialog) = dialogs.next().await.map_err(fail)?
+        {
+            if !self.allow_service_chat
+                && dialog.peer().id().bot_api_dialog_id_unchecked() == SERVICE_CHAT
+            {
+                continue;
+            }
             if skipped < offset {
                 skipped += 1;
                 continue;
@@ -579,6 +587,11 @@ impl TelegramMcp {
                 iter = iter.filter(filter);
             }
             while let Some(message) = iter.next().await.map_err(fail)? {
+                if !self.allow_service_chat
+                    && message.peer_id().bot_api_dialog_id_unchecked() == SERVICE_CHAT
+                {
+                    continue;
+                }
                 messages.push(message_info(&message, self.me));
             }
         }
@@ -701,7 +714,7 @@ impl TelegramMcp {
     }
 
     #[tool(
-        description = "Download the photo or file attached to a message into the server's download folder.",
+        description = "Download the photo or file attached to a message into the server's download folder. Files over the server's size limit are refused.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn download_media(
@@ -729,6 +742,14 @@ impl TelegramMcp {
             },
             _ => return Err("this message has no photo or file".to_owned()),
         };
+        let size = message.media().and_then(|media| media.size()).unwrap_or(0) as u64;
+        if size > self.max_download_mb * 1024 * 1024 {
+            return Err(format!(
+                "Nothing was downloaded: the file is {:.1} MB, over this server's {} MB limit",
+                size as f64 / (1024.0 * 1024.0),
+                self.max_download_mb
+            ));
+        }
         tokio::fs::create_dir_all(&self.download_dir)
             .await
             .map_err(fail)?;

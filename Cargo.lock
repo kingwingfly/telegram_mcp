@@ -2230,6 +2230,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "dotenvy",
+ "glob",
  "grammers-client",
  "grammers-session",
  "jiff",

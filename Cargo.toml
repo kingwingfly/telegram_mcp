@@ -10,6 +10,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
 dirs = "7.0.0"
 dotenvy = "0.15.7"
+glob = "0.3.4"
 grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", features = ["markdown", "parse_invite_link"] }
 grammers-session = { git = "https://codeberg.org/Lonami/grammers.git" }
 jiff = "0.2"

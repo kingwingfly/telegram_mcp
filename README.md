@@ -44,10 +44,11 @@ MCP clients usually launch servers from another directory, so point at `.env` ex
 
 Read tools are always on. Add `"--access", "<groups>"` after `"serve"` to enable tools that act
 as you, comma-separated: `contacts` (join/leave chats, manage contacts) and/or `send`
-(everything else), e.g. `"--access", "contacts,send"`. `--download-dir <PATH>` sets
-where `download_media` saves files (default `<downloads dir>/telegram-mcp`).
-`--upload-dir <PATH>` is the only folder `send_file` sends files from; without it, there is
-no `send_file`.
+(everything else), e.g. `"--access", "contacts,send"`. `--send-to <PATTERNS>` limits the
+`send` group to some chats (see below). `--download-dir <PATH>` sets where `download_media`
+saves files (default `<downloads dir>/telegram-mcp`), and `--max-download-mb <MB>` the largest
+file it saves (default 20 MiB). `--upload-dir <PATH>` is the only folder `send_file` sends
+files from; without it, there is no `send_file`.
 
 Only `TELEGRAM_API_ID` is needed to serve; `TELEGRAM_API_HASH` is only used by `login`.
 Logs go to stderr (`RUST_LOG` controls verbosity), since stdout carries the protocol.
@@ -107,6 +108,18 @@ the agent's context, so only enable them for agents you trust with your account.
 before the check), and isn't offered at all without that flag. The folder must not hold the
 session file or `.env`: `serve` refuses to start if it does. Give it the same folder as
 `--download-dir` to let the agent re-send what `download_media` saved.
+
+`--send-to` limits every `send` tool (sending, editing, deleting, forwarding into, reacting,
+pinning, marking read, clicking buttons) to chats matching one of its patterns,
+comma-separated: a chat's `@username`, its numeric id, or `me` for Saved Messages, with `*`
+for any characters. For example, `--access send --send-to @search_bot,me` lets the agent talk
+to one bot and keep notes, and nothing else. Usernames are matched rather than names, which
+anyone can copy. Read tools and `--access contacts` are not limited by it.
+
+Telegram's service chat (`777000`, "Telegram") receives the account's login codes, and
+whoever reads a code can log in as you. Every tool refuses that chat, and `list_chats` and
+`search_messages` leave it out, unless `serve` is given `--allow-service-chat`. Set a 2FA
+password on the account anyway.
 
 ## Notes
 

@@ -262,6 +262,50 @@ impl TelegramMcp {
         Err(unnamed(&what, &actual, name, name_field))
     }
 
+    /// `resolve_named` for the send group, which `--send-to` limits to the chats it matches.
+    /// Usernames, not names, are matched: anyone can take any name, but a username is owned.
+    async fn resolve_send(
+        &self,
+        chat: &str,
+        name: Option<&str>,
+        name_field: &str,
+    ) -> Result<PeerRef, String> {
+        let peer = self.resolve_named(chat, name, name_field).await?;
+        let Some(patterns) = &self.send_to else {
+            return Ok(peer);
+        };
+        let options = glob::MatchOptions {
+            case_sensitive: false,
+            ..Default::default()
+        };
+        let matches = |name: &str| {
+            patterns
+                .iter()
+                .any(|pattern| pattern.matches_with(name, options))
+        };
+        if matches(&peer.id.bot_api_dialog_id_unchecked().to_string())
+            || (peer.id == self.me.id && matches("me"))
+        {
+            return Ok(peer);
+        }
+        let resolved = self.client.resolve_peer(peer).await.map_err(fail)?;
+        if resolved
+            .username()
+            .into_iter()
+            .chain(resolved.usernames())
+            // Telegram gives usernames without the `@`, which patterns may have or not.
+            .any(|username| matches(username) || matches(&format!("@{username}")))
+        {
+            return Ok(peer);
+        }
+        let allowed: Vec<&str> = patterns.iter().map(glob::Pattern::as_str).collect();
+        Err(format!(
+            "Nothing was done: this server only acts in chats matching {} (a chat's @username, \
+             its numeric id, or `me`), and {chat} is not one of them.",
+            allowed.join(", ")
+        ))
+    }
+
     /// Fetches the messages and checks each against the text passed for it, so the user
     /// confirming the call sees what the messages say, not just their ids. `text_field` is
     /// how the argument holding that text is called in the tool, for the refusal.
@@ -320,7 +364,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<SendMessageParams>,
     ) -> Result<Json<MessageInfo>, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         if let Some(id) = params.reply_to {
             // Left out, the text is refused like a wrong one, which says what it has to be.
@@ -384,7 +428,7 @@ impl TelegramMcp {
             ));
         };
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         if let Some(id) = params.reply_to {
             // Left out, the text is refused like a wrong one, which says what it has to be.
@@ -432,7 +476,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<EditMessageParams>,
     ) -> Result<String, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         self.check_messages(
             peer,
@@ -464,7 +508,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<MessagesParams>,
     ) -> Result<String, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         let messages: Vec<(i32, &str)> = params
             .messages
@@ -502,7 +546,7 @@ impl TelegramMcp {
             )
             .await?;
         let destination = self
-            .resolve_named(
+            .resolve_send(
                 &params.to_chat,
                 params.to_chat_name.as_deref(),
                 "to_chat_name",
@@ -558,7 +602,7 @@ impl TelegramMcp {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         self.check_messages(
             peer,
@@ -594,7 +638,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<NamedMessageParams>,
     ) -> Result<String, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         self.check_messages(
             peer,
@@ -622,7 +666,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<NamedMessageParams>,
     ) -> Result<String, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         self.check_messages(
             peer,
@@ -650,7 +694,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<ClickButtonParams>,
     ) -> Result<Json<ClickResult>, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         let not_empty = |message: &&Message| !matches!(message.raw, tl::enums::Message::Empty(_));
         let message = self
@@ -802,7 +846,7 @@ impl TelegramMcp {
         Parameters(params): Parameters<NamedChatParams>,
     ) -> Result<String, String> {
         let peer = self
-            .resolve_named(&params.chat, params.chat_name.as_deref(), "chat_name")
+            .resolve_send(&params.chat, params.chat_name.as_deref(), "chat_name")
             .await?;
         self.client.mark_as_read(peer).await.map_err(fail)?;
         Ok(format!("marked {} as read", params.chat))

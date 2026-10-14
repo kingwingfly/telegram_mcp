@@ -3,10 +3,9 @@ mod config;
 mod server;
 mod telegram;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -37,23 +36,7 @@ enum Command {
     /// Sign out and delete the session file.
     Logout,
     /// Run the MCP server (the default): over stdio, or over HTTP with `--listen`.
-    Serve {
-        /// Serve MCP over HTTP at `http://<ADDR>/mcp` instead of stdio, e.g. `127.0.0.1:8000`.
-        /// There is no authentication: whoever can reach the address can use the account.
-        #[arg(long, value_name = "ADDR")]
-        listen: Option<SocketAddr>,
-        /// Tool groups acting as you, on top of the read tools; comma-separated or repeated,
-        /// e.g. `--access contacts,send` [default: read only]
-        #[arg(long, value_enum, value_delimiter = ',', value_name = "GROUPS")]
-        access: Vec<server::Access>,
-        /// Where download_media saves files [default: <downloads dir>/telegram-mcp]
-        #[arg(long, value_name = "PATH")]
-        download_dir: Option<PathBuf>,
-        /// The only folder send_file sends from: send_file is offered only with this flag, and
-        /// sends only files inside this folder. It must not hold the session or the .env file.
-        #[arg(long, value_name = "PATH")]
-        upload_dir: Option<PathBuf>,
-    },
+    Serve(server::ServeArgs),
 }
 
 #[tokio::main]
@@ -71,32 +54,13 @@ async fn main() -> Result<()> {
 
     let config = Config::load(cli.env_file.as_deref(), cli.session)?;
 
-    let command = cli.command.unwrap_or(Command::Serve {
-        listen: None,
-        access: Vec::new(),
-        download_dir: None,
-        upload_dir: None,
-    });
+    let command = cli
+        .command
+        .unwrap_or_else(|| Command::Serve(server::ServeArgs::parse_from(["serve"])));
     match command {
         Command::Login => auth::login(&config).await,
         Command::Status => auth::status(&config).await,
         Command::Logout => auth::logout(&config).await,
-        Command::Serve {
-            listen,
-            access,
-            download_dir,
-            upload_dir,
-        } => {
-            let download_dir = match download_dir {
-                Some(dir) => dir,
-                None => dirs::download_dir()
-                    .or_else(dirs::data_dir)
-                    .context("cannot determine a download directory; pass --download-dir")?
-                    .join("telegram-mcp"),
-            };
-            // Paths are reported to the agent, so make them absolute.
-            let download_dir = std::path::absolute(download_dir)?;
-            server::serve(&config, listen, access, download_dir, upload_dir).await
-        }
+        Command::Serve(args) => server::serve(&config, args).await,
     }
 }

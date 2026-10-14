@@ -44,7 +44,49 @@ pub struct TelegramMcp {
     download_dir: PathBuf,
     /// Canonical `--upload-dir`, the only folder send_file reads from. `None`: no uploading.
     upload_dir: Option<PathBuf>,
+    /// `--send-to`: the chats the send tools may act in. `None`: any chat.
+    send_to: Option<Vec<glob::Pattern>>,
+    /// `--allow-service-chat`: whether tools may use `SERVICE_CHAT`.
+    allow_service_chat: bool,
+    /// `--max-download-mb`.
+    max_download_mb: u64,
     tool_router: ToolRouter<Self>,
+}
+
+/// Telegram's service notifications user. Login codes arrive there, so whoever reads it can
+/// log in as the account: tools refuse it and leave it out of lists unless `--allow-service-chat`.
+const SERVICE_CHAT: i64 = 777000;
+
+/// `serve`'s flags.
+#[derive(clap::Parser)]
+pub struct ServeArgs {
+    /// Serve MCP over HTTP at `http://<ADDR>/mcp` instead of stdio, e.g. `127.0.0.1:8000`.
+    /// There is no authentication: whoever can reach the address can use the account.
+    #[arg(long, value_name = "ADDR")]
+    listen: Option<SocketAddr>,
+    /// Tool groups acting as you, on top of the read tools; comma-separated or repeated,
+    /// e.g. `--access contacts,send` [default: read only]
+    #[arg(long, value_enum, value_delimiter = ',', value_name = "GROUPS")]
+    access: Vec<Access>,
+    /// Limit the send group to chats matching these patterns; comma-separated or repeated.
+    /// A pattern matches a chat's @username, its numeric id, or `me` (Saved Messages); `*`
+    /// matches any characters, e.g. `--send-to @search_bot,me` [default: any chat]
+    #[arg(long, value_delimiter = ',', value_name = "PATTERNS")]
+    send_to: Vec<String>,
+    /// Where download_media saves files [default: <downloads dir>/telegram-mcp]
+    #[arg(long, value_name = "PATH")]
+    download_dir: Option<PathBuf>,
+    /// Largest file download_media saves, in MiB
+    #[arg(long, value_name = "MB", default_value_t = 20)]
+    max_download_mb: u64,
+    /// The only folder send_file sends from: send_file is offered only with this flag, and
+    /// sends only files inside this folder. It must not hold the session or the .env file.
+    #[arg(long, value_name = "PATH")]
+    upload_dir: Option<PathBuf>,
+    /// Let tools read and use Telegram's service chat (777000). Off by default: it receives
+    /// the account's login codes, and whoever reads one can log in as the account.
+    #[arg(long)]
+    allow_service_chat: bool,
 }
 
 /// Tool groups that act as the user, on top of the always-on read tools. Independent:
@@ -79,8 +121,23 @@ impl ServerHandler for TelegramMcp {
             } else {
                 r#"leave_chat takes {"chat": "-1001234567890", "chat_name": "Family"}"#
             };
+            // The agent can't tell which chats are allowed until a call is refused otherwise.
+            let send_to = match &self.send_to {
+                Some(patterns) if self.access.contains(&Access::Send) => format!(
+                    "Sending, editing, deleting, forwarding, reacting, pinning, marking read and \
+                     clicking buttons only work in chats matching {}: a pattern matches a chat's \
+                     @username, its numeric id, or `me`, and `*` matches any characters. ",
+                    patterns
+                        .iter()
+                        .map(glob::Pattern::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                _ => String::new(),
+            };
             format!(
                 "Enabled, and done as this user: {}. Anything else acting as this user is disabled. \
+                 {send_to}\
                  The user approves each of these calls by reading its arguments, so in them an id \
                  never goes alone. A numeric id goes with the name list_chats or get_chat show for \
                  it, in the same call: `chat` with `chat_name`, `user` with `user_name`, \
@@ -134,44 +191,58 @@ impl TelegramMcp {
     }
 
     async fn resolve_chat(&self, chat: &ChatRef) -> Result<PeerRef, String> {
-        match chat {
-            ChatRef::Me => Ok(self.me),
+        let peer = match chat {
+            ChatRef::Me => self.me,
             // Users and channels need the access hash cached when the peer was last seen.
             ChatRef::Peer(id) => match self.session.peer_ref(*id).await.map_err(fail)? {
-                Some(peer) => Ok(peer),
-                None if id.kind() == PeerKind::Chat => Ok(id.to_ambient_ref()),
-                None => Err(format!(
-                    "chat {} is not known yet; find it with list_chats or pass its @username",
-                    id.bot_api_dialog_id_unchecked()
-                )),
+                Some(peer) => peer,
+                None if id.kind() == PeerKind::Chat => id.to_ambient_ref(),
+                None => {
+                    return Err(format!(
+                        "chat {} is not known yet; find it with list_chats or pass its @username",
+                        id.bot_api_dialog_id_unchecked()
+                    ));
+                }
             },
             ChatRef::Username(username) => {
                 let key = username.to_lowercase();
-                if let Some(peer) = self.usernames.lock().unwrap().get(&key) {
-                    return Ok(*peer);
+                let cached = self.usernames.lock().unwrap().get(&key).copied();
+                match cached {
+                    Some(peer) => peer,
+                    None => {
+                        let peer = self
+                            .client
+                            .resolve_username(username)
+                            .await
+                            .map_err(fail)?
+                            .ok_or(format!("no chat with username @{username}"))?
+                            .to_ref()
+                            .await
+                            .map_err(fail)?
+                            .ok_or(format!("@{username} is not accessible"))?;
+                        self.usernames.lock().unwrap().insert(key, peer);
+                        peer
+                    }
                 }
-                let peer = self
-                    .client
-                    .resolve_username(username)
-                    .await
-                    .map_err(fail)?
-                    .ok_or(format!("no chat with username @{username}"))?
-                    .to_ref()
-                    .await
-                    .map_err(fail)?
-                    .ok_or(format!("@{username} is not accessible"))?;
-                self.usernames.lock().unwrap().insert(key, peer);
-                Ok(peer)
             }
             // join_chat is only registered with `--access contacts`.
-            ChatRef::Invite(_) if self.access.contains(&Access::Contacts) => Err(
-                "this is an invite link: preview it with open_link, or join with join_chat"
-                    .to_owned(),
-            ),
-            ChatRef::Invite(_) => {
-                Err("this is an invite link: preview it with open_link".to_owned())
+            ChatRef::Invite(_) if self.access.contains(&Access::Contacts) => {
+                return Err(
+                    "this is an invite link: preview it with open_link, or join with join_chat"
+                        .to_owned(),
+                );
             }
+            ChatRef::Invite(_) => {
+                return Err("this is an invite link: preview it with open_link".to_owned());
+            }
+        };
+        if !self.allow_service_chat && peer.id.bot_api_dialog_id_unchecked() == SERVICE_CHAT {
+            return Err(format!(
+                "Telegram's service chat ({SERVICE_CHAT}) is off limits: it receives the \
+                 account's login codes"
+            ));
         }
+        Ok(peer)
     }
 }
 
@@ -283,15 +354,39 @@ fn parse_link(input: &str) -> Result<Link, String> {
 
 /// Runs the MCP server over stdio, or over Streamable HTTP at `http://<listen>/mcp`. Requires
 /// a session created by `telegram-mcp login`.
-pub async fn serve(
-    config: &Config,
-    listen: Option<SocketAddr>,
-    mut access: Vec<Access>,
-    download_dir: PathBuf,
-    upload_dir: Option<PathBuf>,
-) -> Result<()> {
+pub async fn serve(config: &Config, args: ServeArgs) -> Result<()> {
+    let ServeArgs {
+        listen,
+        mut access,
+        send_to,
+        download_dir,
+        max_download_mb,
+        upload_dir,
+        allow_service_chat,
+    } = args;
     access.sort();
     access.dedup();
+    let download_dir = match download_dir {
+        Some(dir) => dir,
+        None => dirs::download_dir()
+            .or_else(dirs::data_dir)
+            .context("cannot determine a download directory; pass --download-dir")?
+            .join("telegram-mcp"),
+    };
+    // Paths are reported to the agent, so make them absolute.
+    let download_dir = std::path::absolute(download_dir)?;
+    let send_to = if send_to.is_empty() {
+        None
+    } else {
+        let patterns = send_to
+            .iter()
+            .map(|pattern| {
+                glob::Pattern::new(pattern.trim())
+                    .with_context(|| format!("invalid --send-to pattern {pattern:?}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Some(patterns)
+    };
     let path = &config.session_path;
     if !path.exists() {
         bail!(
@@ -345,6 +440,11 @@ pub async fn serve(
             .map_err(|e| anyhow!(e))?
             .unwrap_or(PeerId::self_user().to_ambient_ref());
         tracing::info!("serving MCP as {account} (access: {access:?})");
+        if allow_service_chat {
+            tracing::warn!(
+                "--allow-service-chat: tools can read the account's login codes ({SERVICE_CHAT})"
+            );
+        }
 
         let mut tool_router = TelegramMcp::read_tools();
         if access.contains(&Access::Contacts) {
@@ -366,6 +466,9 @@ pub async fn serve(
             access,
             download_dir,
             upload_dir,
+            send_to,
+            allow_service_chat,
+            max_download_mb,
             tool_router,
         };
         match listener {
