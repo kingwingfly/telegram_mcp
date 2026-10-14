@@ -9,8 +9,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, SERVICE_CHAT, TelegramMcp,
-    chat_info, fail, message_info, parse_link, parse_reaction, reaction_text,
+    ChatInfo, ChatParams, ChatRef, MessageInfo, MessageParams, Messages, TelegramMcp, chat_info,
+    fail, message_info, parse_link, parse_reaction, reaction_text,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -255,15 +255,16 @@ impl TelegramMcp {
         let offset = params.offset.unwrap_or(0);
         let limit = params.limit.unwrap_or(20).min(100);
         // One more, in case the service chat is among them and left out.
-        let mut dialogs = self.client.iter_dialogs().limit(offset + limit + 1);
+        let mut dialogs = self
+            .client
+            .iter_dialogs()
+            .limit(offset.saturating_add(limit + 1));
         let mut chats = Vec::with_capacity(limit);
         let mut skipped = 0;
         while chats.len() < limit
             && let Some(dialog) = dialogs.next().await.map_err(fail)?
         {
-            if !self.allow_service_chat
-                && dialog.peer().id().bot_api_dialog_id_unchecked() == SERVICE_CHAT
-            {
+            if self.off_limits(dialog.peer().id()) {
                 continue;
             }
             if skipped < offset {
@@ -578,18 +579,20 @@ impl TelegramMcp {
             {
                 return Err("from_me, since, until and before_id require `chat`".to_owned());
             }
+            // Room for the service chat's messages, which are left out: there is no paging
+            // here to reach the results past them.
             let mut iter = self
                 .client
                 .search_all_messages()
                 .query(&params.query)
-                .limit(limit);
+                .limit(limit + 100);
             if let Some(filter) = filter {
                 iter = iter.filter(filter);
             }
-            while let Some(message) = iter.next().await.map_err(fail)? {
-                if !self.allow_service_chat
-                    && message.peer_id().bot_api_dialog_id_unchecked() == SERVICE_CHAT
-                {
+            while messages.len() < limit
+                && let Some(message) = iter.next().await.map_err(fail)?
+            {
+                if self.off_limits(message.peer_id()) {
                     continue;
                 }
                 messages.push(message_info(&message, self.me));
@@ -731,19 +734,22 @@ impl TelegramMcp {
             .flatten()
             .find(|message| !matches!(message.raw, tl::enums::Message::Empty(_)))
             .ok_or(format!("message {} not found", params.message_id))?;
-        let name = match message.media() {
-            Some(Media::Photo(_)) => "photo.jpg".to_owned(),
-            Some(Media::Document(document)) => match document.name() {
-                Some(name) if !name.is_empty() => name.replace(['/', '\\'], "_"),
-                _ => {
-                    let mime = document.mime_type().unwrap_or_default();
-                    format!("file.{}", mime.split('/').nth(1).unwrap_or("bin"))
-                }
-            },
+        let (name, size) = match message.media() {
+            Some(Media::Photo(photo)) => ("photo.jpg".to_owned(), photo.size()),
+            Some(Media::Document(document)) => {
+                let name = match document.name() {
+                    Some(name) if !name.is_empty() => name.replace(['/', '\\'], "_"),
+                    _ => {
+                        let mime = document.mime_type().unwrap_or_default();
+                        format!("file.{}", mime.split('/').nth(1).unwrap_or("bin"))
+                    }
+                };
+                (name, document.size())
+            }
             _ => return Err("this message has no photo or file".to_owned()),
         };
-        let size = message.media().and_then(|media| media.size()).unwrap_or(0) as u64;
-        if size > self.max_download_mb * 1024 * 1024 {
+        let size = size.unwrap_or(0) as u64;
+        if size > self.max_download_mb.saturating_mul(1024 * 1024) {
             return Err(format!(
                 "Nothing was downloaded: the file is {:.1} MB, over this server's {} MB limit",
                 size as f64 / (1024.0 * 1024.0),

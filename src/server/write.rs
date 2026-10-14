@@ -49,10 +49,10 @@ struct SendFileParams {
     /// The chat's `name`, copied exactly from list_chats or get_chat. Always pass it when
     /// `chat` is a numeric id: the call is refused without it.
     chat_name: Option<String>,
-    /// Path of the file to upload. Only files in the server's upload folder can be sent: any
-    /// other path is refused, and the refusal names that folder. When download_media saves
-    /// there, the `path` it returned can be passed as it is. .jpg/.png/.webp are sent as
-    /// photos, anything else as a file.
+    /// Path of the file to upload, absolute or relative to the server's upload folder. Only
+    /// files in that folder can be sent: any other path is refused, and the refusal names that
+    /// folder. When download_media saves there, the `path` it returned can be passed as it is.
+    /// .jpg/.png/.webp are sent as photos, anything else as a file.
     path: String,
     /// Markdown caption.
     caption: Option<String>,
@@ -400,9 +400,10 @@ impl TelegramMcp {
         let Some(dir) = &self.upload_dir else {
             return Err("send_file is off: the server was started without --upload-dir".to_owned());
         };
-        // Symlinks and `..` are resolved first, so the file checked is the file sent.
+        // Symlinks and `..` are resolved first, so the file checked is the file sent. A relative
+        // path starts in the upload folder, not in the server's working directory.
         let checked = async {
-            let path = tokio::fs::canonicalize(&params.path).await.ok()?;
+            let path = tokio::fs::canonicalize(dir.join(&params.path)).await.ok()?;
             if !path.starts_with(dir) || !tokio::fs::metadata(&path).await.ok()?.is_file() {
                 return None;
             }

@@ -71,7 +71,13 @@ pub struct ServeArgs {
     /// Limit the send group to chats matching these patterns; comma-separated or repeated.
     /// A pattern matches a chat's @username, its numeric id, or `me` (Saved Messages); `*`
     /// matches any characters, e.g. `--send-to @search_bot,me` [default: any chat]
-    #[arg(long, value_delimiter = ',', value_name = "PATTERNS")]
+    // Group and channel ids are negative, so a value may start with `-`.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        value_name = "PATTERNS",
+        allow_hyphen_values = true
+    )]
     send_to: Vec<String>,
     /// Where download_media saves files [default: <downloads dir>/telegram-mcp]
     #[arg(long, value_name = "PATH")]
@@ -175,6 +181,12 @@ impl TelegramMcp {
         self.resolve_chat(&parse_link(chat)?.chat).await
     }
 
+    /// Whether `id` is the service chat while `--allow-service-chat` is off: tools refuse it,
+    /// and lists leave it out.
+    fn off_limits(&self, id: PeerId) -> bool {
+        !self.allow_service_chat && id.bot_api_dialog_id_unchecked() == SERVICE_CHAT
+    }
+
     /// Caches the access hashes of peers in a raw API response, so the ids tools report for
     /// them work as `chat` later. grammers only does this for its own high-level requests.
     async fn cache_peers(
@@ -236,7 +248,7 @@ impl TelegramMcp {
                 return Err("this is an invite link: preview it with open_link".to_owned());
             }
         };
-        if !self.allow_service_chat && peer.id.bot_api_dialog_id_unchecked() == SERVICE_CHAT {
+        if self.off_limits(peer.id) {
             return Err(format!(
                 "Telegram's service chat ({SERVICE_CHAT}) is off limits: it receives the \
                  account's login codes"

@@ -39,6 +39,17 @@ built on [`rmcp`](https://crates.io/crates/rmcp) and [`grammers`](https://codebe
    file. So keep it out of images, logs and shell history, which is why it goes in through a
    pipe. A login or a logout makes a new line necessary.
 
+   Don't use one session in two places at the same time: Telegram revokes a session used
+   from two addresses at once (`AUTH_KEY_DUPLICATED`), which logs both out. If this machine
+   keeps using its session, give the container one of its own: log in again into another
+   file, export that, and delete the file:
+
+   ```sh
+   telegram-mcp --session container.session login
+   telegram-mcp --session container.session export-session | <your secret store's command>
+   rm container.session
+   ```
+
 ## Connecting an MCP client
 
 `serve` is the default command; it refuses to start until `login` has been completed.
