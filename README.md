@@ -26,6 +26,19 @@ built on [`rmcp`](https://crates.io/crates/rmcp) and [`grammers`](https://codebe
    `--session <PATH>` or `TELEGRAM_MCP_SESSION`. Treat this file like a password: it
    grants full access to the account.
 
+3. Where the session can't be a file you copy in, such as a container whose image must not
+   hold the account, hand it over as one line instead:
+
+   ```sh
+   telegram-mcp export-session | <your secret store's command that reads stdin>
+   ```
+
+   Run the server with that line in `TELEGRAM_MCP_SESSION_STRING`. When the session file
+   doesn't exist yet, it is made from the line, owner-only, at the usual path or `--session`.
+   A file that is already there is used as it is. The line is the account, just like the
+   file. So keep it out of images, logs and shell history, which is why it goes in through a
+   pipe. A login or a logout makes a new line necessary.
+
 ## Connecting an MCP client
 
 `serve` is the default command; it refuses to start until `login` has been completed.

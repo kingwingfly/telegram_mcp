@@ -1,13 +1,19 @@
 use std::fs;
+use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Input, Password};
 use grammers_client::peer::User;
 use grammers_client::{Client, SignInError};
+use grammers_session::Session;
+use grammers_session::types::DcOption;
 
-use crate::config::Config;
-use crate::telegram::{Telegram, describe};
+use crate::config::{Config, SESSION_STRING_ENV};
+use crate::telegram::{Telegram, describe, open_session};
+
+/// First field of an exported session line, changed if the line's layout ever changes.
+const SESSION_STRING_VERSION: &str = "1";
 
 const MAX_ATTEMPTS: usize = 3;
 
@@ -160,6 +166,84 @@ pub async fn logout(config: &Config) -> Result<()> {
         let _ = fs::remove_file(side);
     }
     println!("Deleted session {}.", path.display());
+    Ok(())
+}
+
+/// Prints the session as one line, for somewhere that holds a secret but no file (a
+/// container's environment): `import_session` makes a session file from it again. The
+/// line is the account, as the file is.
+pub async fn export_session(config: &Config) -> Result<()> {
+    let path = &config.session_path;
+    if !path.exists() {
+        bail!(
+            "no session at {}; run `telegram-mcp login` first",
+            path.display()
+        );
+    }
+    let tg = Telegram::connect(config).await?;
+    let result = async {
+        let Some(me) = authorized_user(&tg.client).await? else {
+            bail!(
+                "the session at {} is not logged in; run `telegram-mcp login` first",
+                path.display()
+            );
+        };
+        // Signing in binds the account to the auth key of its home datacenter, and that is
+        // all a session needs to start from: grammers knows the other datacenters itself.
+        let dc_id = tg.session.home_dc_id()?;
+        let dc = tg
+            .session
+            .dc_option(dc_id)?
+            .with_context(|| format!("the session has no address for its datacenter {dc_id}"))?;
+        let key = dc
+            .auth_key
+            .with_context(|| format!("the session has no auth key for datacenter {dc_id}"))?;
+        anyhow::Ok((me, dc, key))
+    }
+    .await;
+    tg.shutdown().await;
+
+    let (me, dc, key) = result?;
+    let key: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    // Only the line goes to stdout, so that it can be piped into a secret store.
+    eprintln!(
+        "The next line logs in as {}. Keep it where a password would go, and nowhere else.",
+        describe(&me)
+    );
+    println!(
+        "{SESSION_STRING_VERSION};{};{};{};{key}",
+        dc.id, dc.ipv4, dc.ipv6
+    );
+    Ok(())
+}
+
+/// Creates the session file at `path` from a line `export_session` printed.
+pub async fn import_session(path: &Path, line: &str) -> Result<()> {
+    // Errors never quote the line: it is the account.
+    let invalid =
+        || anyhow!("{SESSION_STRING_ENV} is not a line printed by `telegram-mcp export-session`");
+    let fields: Vec<&str> = line.trim().split(';').collect();
+    let [SESSION_STRING_VERSION, dc_id, ipv4, ipv6, key] = fields[..] else {
+        return Err(invalid());
+    };
+    let key: Vec<u8> = (0..key.len())
+        .step_by(2)
+        .map(|at| {
+            key.get(at..at + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        })
+        .collect::<Option<_>>()
+        .ok_or_else(invalid)?;
+    // Everything is read before the file is made, so a bad line leaves none behind.
+    let dc = DcOption {
+        id: dc_id.parse().map_err(|_| invalid())?,
+        ipv4: ipv4.parse().map_err(|_| invalid())?,
+        ipv6: ipv6.parse().map_err(|_| invalid())?,
+        auth_key: Some(key.try_into().map_err(|_| invalid())?),
+    };
+    let session = open_session(path).await?;
+    session.set_dc_option(&dc).await?;
+    session.set_home_dc_id(dc.id).await?;
     Ok(())
 }
 

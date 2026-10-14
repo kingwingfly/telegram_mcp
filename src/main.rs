@@ -3,13 +3,14 @@ mod config;
 mod server;
 mod telegram;
 
+use std::env;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use crate::config::Config;
+use crate::config::{Config, SESSION_STRING_ENV};
 
 /// MCP server for Telegram, acting as your user account.
 #[derive(Parser)]
@@ -35,6 +36,9 @@ enum Command {
     Status,
     /// Sign out and delete the session file.
     Logout,
+    /// Print the session as one line, for TELEGRAM_MCP_SESSION_STRING where no file can go.
+    /// The line logs in as the account: pipe it into a secret store.
+    ExportSession,
     /// Run the MCP server (the default): over stdio, or over HTTP with `--listen`.
     Serve(server::ServeArgs),
 }
@@ -53,6 +57,14 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::load(cli.env_file.as_deref(), cli.session)?;
+    // A session handed over as a line, where a file can't be shipped (a container whose
+    // image must not hold the account). A file that is already there wins.
+    if let Ok(line) = env::var(SESSION_STRING_ENV)
+        && !line.trim().is_empty()
+        && !config.session_path.exists()
+    {
+        auth::import_session(&config.session_path, &line).await?;
+    }
 
     let command = cli
         .command
@@ -61,6 +73,7 @@ async fn main() -> Result<()> {
         Command::Login => auth::login(&config).await,
         Command::Status => auth::status(&config).await,
         Command::Logout => auth::logout(&config).await,
+        Command::ExportSession => auth::export_session(&config).await,
         Command::Serve(args) => server::serve(&config, args).await,
     }
 }

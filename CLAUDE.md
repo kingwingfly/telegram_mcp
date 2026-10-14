@@ -22,6 +22,7 @@ cargo test                        # single test: cargo test <name>
 cargo run -- login                # interactive login (dialoguer; needs a real TTY)
 cargo run -- status               # which account the session belongs to
 cargo run -- logout               # sign out + delete session file
+cargo run -- export-session       # the session as one line, for TELEGRAM_MCP_SESSION_STRING
 cargo run                         # = `serve`: MCP over stdio, read-only tools
 cargo run -- serve --access contacts       # also join/leave chats, add/delete contacts
 cargo run -- serve --access contacts,send  # groups are independent; combine them
@@ -52,9 +53,10 @@ Test write tools only in Saved Messages (`"chat": "me"`), and delete what you cr
 
 ## Architecture
 
-- `main.rs`: clap CLI; dispatches to `auth` (login/status/logout) or `server` (serve, the default).
+- `main.rs`: clap CLI; dispatches to `auth` (login/status/logout/export-session) or `server` (serve, the default). Before any command, it makes the session file from `TELEGRAM_MCP_SESSION_STRING` when that is set and there is no file yet (`auth::import_session`).
+- `auth.rs`, `export-session`: the session as one line, `1;<dc id>;<ipv4>;<ipv6>;<auth key in hex>`. That is the home datacenter's `DcOption` and nothing else, since grammers knows the other datacenters and the peer cache refills itself. Only the line goes to stdout, so that it can be piped. The line is the account: never print it, log it or quote it in an error.
 - `config.rs`: loads `.env`, reads `TELEGRAM_API_ID` (always needed) and `TELEGRAM_API_HASH` (only needed by `login`, to request a code). The hash is wrapped in `ApiHash`, whose `Debug` is redacted. Never print or log it.
-- `telegram.rs`: `Telegram::connect` opens the SQLite session (made owner-only when it creates the file; an existing file's permissions and ACLs are left alone, so another OS user can share it), builds a grammers `SenderPool`, spawns its runner task, and returns the `Client`. Always call `Telegram::shutdown()` on every path, including errors, so the runner stops cleanly. The pattern used is `let result = ...; tg.shutdown().await; result`. The pool's update receiver is dropped because updates are not consumed yet.
+- `telegram.rs`: `Telegram::connect` opens the SQLite session through `open_session` (made owner-only when it creates the file; an existing file's permissions and ACLs are left alone, so another OS user can share it), builds a grammers `SenderPool`, spawns its runner task, and returns the `Client`. Always call `Telegram::shutdown()` on every path, including errors, so the runner stops cleanly. The pattern used is `let result = ...; tg.shutdown().await; result`. The pool's update receiver is dropped because updates are not consumed yet.
 - `server.rs`: `TelegramMcp` (the `ServerHandler`), `serve`, and what the tool modules share: `parse_link` (every chat/link format → `ChatRef` + optional message id), `resolve` / `resolve_chat`, output types (`ChatInfo`, `MessageInfo`, `Messages`), shared params, and the `chat_info` / `message_info` / `fail` helpers. `serve` refuses to start unless the session is authorized. With `--listen` it serves rmcp's `StreamableHttpService` through axum at `/mcp`, stateless: every request is handled by a fresh clone of `TelegramMcp`, so state that must outlive a request sits behind an `Arc` (like `usernames`). There is no authentication.
 - `server/read.rs`: `read_tools` router (always registered) plus `chat_details`, shared by `get_chat` and `open_link` (full info, profile/linked chat, pinned messages).
 - Raw API calls (`client.invoke`): grammers can't build `Message`/`Peer` maps from them (`PeerMap` has no public constructor). Call `self.cache_peers(&chats, &users)` on every raw response so the ids tools report stay usable; to get full messages, take the ids and refetch with `get_messages_by_id` (as `get_replies` does with `messages.getReplies`).

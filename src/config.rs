@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 
 const SESSION_ENV: &str = "TELEGRAM_MCP_SESSION";
+/// A session as one line, from `export-session`. It makes the session file when there is
+/// none yet.
+pub const SESSION_STRING_ENV: &str = "TELEGRAM_MCP_SESSION_STRING";
 
 /// Telegram API hash. Never printed: `Debug` is redacted and there is no `Display`.
 pub struct ApiHash(String);
